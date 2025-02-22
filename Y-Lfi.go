@@ -5,7 +5,6 @@ import (
     "bytes"
     "context"
     "crypto/tls"
-    "encoding/json"
     "flag"
     "fmt"
     "io"
@@ -13,12 +12,11 @@ import (
     "net/http"
     "net/url"
     "os"
-    "regexp"
+    "strconv"
     "strings"
     "sync"
     "time"
 
-    "golang.org/x/net/http2"
     "golang.org/x/time/rate"
 )
 
@@ -34,24 +32,26 @@ const (
 // LFI indicators to check in responses
 var lfiIndicators = []string{
     "/etc/passwd", // Focus on specific file paths
+    "/etc/hosts",  // Additional indicator
 }
 
 const (
-    maxRetries       = 3
-    rateLimitPerSec  = 5  // Max requests per second
+    maxRetries      = 3
+    rateLimitPerSec = 5 // Max requests per second
 )
 
 var (
-    proxies      []string
-    proxyIndex   int
-    proxyMutex   sync.Mutex
-    resultFile   *os.File
-    resultMutex  sync.Mutex
-    limiter      = rate.NewLimiter(rate.Limit(rateLimitPerSec), 1) // Rate limiter
-    showProgress bool
-    vulnOnly     bool
-    excludeSizes []int
-    excludeCodes []int
+    proxies          []string
+    proxyIndex       int
+    proxyMutex       sync.Mutex
+    resultFile       *os.File
+    resultMutex      sync.Mutex
+    limiter          = rate.NewLimiter(rate.Limit(rateLimitPerSec), 1) // Rate limiter
+    showProgress     bool
+    vulnOnly         bool
+    excludeSizes     []int
+    excludeCodes     []int
+    hideNotVulnerable bool // New flag to hide not vulnerable endpoints
 )
 
 // Expanded User-Agents list
@@ -68,6 +68,46 @@ var userAgents = []string{
     "Mozilla/5.0 (Linux; Android 11; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Mobile Safari/537.36",
     "Mozilla/5.0 (iPad; CPU OS 13_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/87.0.4280.77 Mobile/15E148 Safari/604.1",
     "Mozilla/5.0 (Windows NT 10.0; Trident/7.0; rv:11.0) like Gecko",
+}
+
+func worker(urlChan <-chan string, payloads []string, method string, reqInterval int, requestCount *int, countMutex *sync.Mutex, wg *sync.WaitGroup, headers string, cookies string, timeout int, skipSSLVerify bool, totalURLs int, totalPayloads int) {
+    defer wg.Done()
+
+    testedEndpoints := make(map[string]bool)
+    rand.Seed(time.Now().UnixNano())
+
+    for fullURL := range urlChan {
+        if err := limiter.Wait(context.Background()); err != nil {
+            fmt.Printf("%s[-] Rate limit error for %s: %v%s\n", Red, fullURL, err, Reset)
+            continue
+        }
+
+        baseEndpoint := extractBaseEndpoint(fullURL, payloads)
+        if testedEndpoints[baseEndpoint] {
+            continue
+        }
+
+        client := createClient(timeout, skipSSLVerify)
+        req, err := buildRequest(method, fullURL, payloads, headers, cookies)
+        if err != nil {
+            fmt.Printf("%s[-] Error building request for %s: %v%s\n", Red, fullURL, err, Reset)
+            logResult(fmt.Sprintf("[-] Error building request for %s: %v", fullURL, err))
+            continue
+        }
+
+        if performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads) {
+            countMutex.Lock()
+            *requestCount++
+            if *requestCount%reqInterval == 0 {
+                sendNormalRequest(client, baseEndpoint)
+            }
+            countMutex.Unlock()
+
+            if method == "POST" {
+                testCookies(fullURL, payloads, client, testedEndpoints, totalURLs, totalPayloads)
+            }
+        }
+    }
 }
 
 func main() {
@@ -107,12 +147,13 @@ misuse or damage caused by this program.` + Reset)
     flag.BoolVar(&vulnOnly, "vuln-only", false, "Show only vulnerable URLs")
     excludeSizesFlag := flag.String("exclude-sizes", "", "Comma-separated list of response sizes to exclude")
     excludeCodesFlag := flag.String("exclude-codes", "", "Comma-separated list of status codes to exclude")
+    flag.BoolVar(&hideNotVulnerable, "hide-not-vulnerable", false, "Hide not vulnerable endpoints")
     flag.Parse()
 
     limiter.SetLimit(rate.Limit(*rateLimit)) // Update rate limit from flag
 
     if *payloadFile == "" || (*urlFlag == "" && *endpointFile == "") {
-        fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file] [-o output_file] [-rate requests_per_sec] [-headers 'Header1:Value1,Header2:Value2'] [-cookies 'Cookie1=Value1; Cookie2=Value2'] [-timeout 10] [-skip-ssl-verify] [-show-progress] [-vuln-only] [-exclude-sizes 50,100] [-exclude-codes 404,500]")
+        fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file] [-o output_file] [-rate requests_per_sec] [-headers 'Header1:Value1,Header2:Value2'] [-cookies 'Cookie1=Value1; Cookie2=Value2'] [-timeout 10] [-skip-ssl-verify] [-show-progress] [-vuln-only] [-exclude-sizes 50,100] [-exclude-codes 404,500] [-hide-not-vulnerable]")
         os.Exit(1)
     }
 
@@ -210,46 +251,81 @@ misuse or damage caused by this program.` + Reset)
     wg.Wait()
 }
 
-func worker(urlChan <-chan string, payloads []string, method string, reqInterval int, requestCount *int, countMutex *sync.Mutex, wg *sync.WaitGroup, headers string, cookies string, timeout int, skipSSLVerify bool, totalURLs int, totalPayloads int) {
-    defer wg.Done()
-
-    testedEndpoints := make(map[string]bool)
-    rand.Seed(time.Now().UnixNano())
-
-    for fullURL := range urlChan {
-        if err := limiter.Wait(context.Background()); err != nil {
-            fmt.Printf("%s[-] Rate limit error for %s: %v%s\n", Red, fullURL, err, Reset)
-            continue
-        }
-
-        baseEndpoint := extractBaseEndpoint(fullURL, payloads)
-        if testedEndpoints[baseEndpoint] {
-            continue
-        }
-
-        client := createClient(timeout, skipSSLVerify)
-        req, err := buildRequest(method, fullURL, payloads, headers, cookies)
-        if err != nil {
-            fmt.Printf("%s[-] Error building request for %s: %v%s\n", Red, fullURL, err, Reset)
-            logResult(fmt.Sprintf("[-] Error building request for %s: %v", fullURL, err))
-            continue
-        }
-
-        if performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads) {
-            countMutex.Lock()
-            *requestCount++
-            if *requestCount%reqInterval == 0 {
-                sendNormalRequest(client, baseEndpoint)
-            }
-            countMutex.Unlock()
-
-            if method == "POST" {
-                testCookies(fullURL, payloads, client, testedEndpoints, totalURLs, totalPayloads)
-            }
-        }
+// atoi converts a string to an integer
+func atoi(s string) int {
+    i, err := strconv.Atoi(s)
+    if err != nil {
+        return 0
     }
+    return i
 }
 
+// readLines reads a file and returns its lines as a slice of strings
+func readLines(filename string) ([]string, error) {
+    file, err := os.Open(filename)
+    if err != nil {
+        return nil, err
+    }
+    defer file.Close()
+
+    var lines []string
+    scanner := bufio.NewScanner(file)
+    for scanner.Scan() {
+        line := strings.TrimSpace(scanner.Text())
+        if line != "" {
+            lines = append(lines, line)
+        }
+    }
+    return lines, scanner.Err()
+}
+
+// validateProxies validates the list of proxies
+func validateProxies() {
+    var validProxies []string
+    for _, proxy := range proxies {
+        client := &http.Client{
+            Timeout: 5 * time.Second,
+            Transport: &http.Transport{
+                Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: proxy}),
+            },
+        }
+        resp, err := client.Get("http://example.com")
+        if err == nil && resp.StatusCode == http.StatusOK {
+            validProxies = append(validProxies, proxy)
+        }
+    }
+    proxies = validProxies
+}
+
+// extractParams extracts query parameters from a URL
+func extractParams(endpoint string) map[string][]string {
+    parsedURL, err := url.Parse(endpoint)
+    if err != nil {
+        return map[string][]string{}
+    }
+    return parsedURL.Query()
+}
+
+// buildURLWithParam builds a URL with a specific parameter and payload
+func buildURLWithParam(endpoint, param, payload string) string {
+    parsedURL, _ := url.Parse(endpoint)
+    query := parsedURL.Query()
+    query.Set(param, payload)
+    parsedURL.RawQuery = query.Encode()
+    return parsedURL.String()
+}
+
+// extractBaseEndpoint extracts the base endpoint from a URL
+func extractBaseEndpoint(url string, payloads []string) string {
+    for _, payload := range payloads {
+        if strings.HasSuffix(url, payload) {
+            return strings.TrimSuffix(url, payload)
+        }
+    }
+    return url
+}
+
+// createClient creates an HTTP client with the specified timeout and SSL verification settings
 func createClient(timeout int, skipSSLVerify bool) *http.Client {
     transport := &http.Transport{
         ForceAttemptHTTP2: true, // Enable HTTP/2
@@ -268,6 +344,7 @@ func createClient(timeout int, skipSSLVerify bool) *http.Client {
     }
 }
 
+// getNextProxy returns the next proxy in the list
 func getNextProxy() string {
     proxyMutex.Lock()
     defer proxyMutex.Unlock()
@@ -279,6 +356,7 @@ func getNextProxy() string {
     return proxy
 }
 
+// buildRequest builds an HTTP request with the specified method, URL, payload, headers, and cookies
 func buildRequest(method, fullURL string, payloads []string, headers string, cookies string) (*http.Request, error) {
     var req *http.Request
     var err error
@@ -338,66 +416,7 @@ func buildRequest(method, fullURL string, payloads []string, headers string, coo
     return req, nil
 }
 
-func validateProxies() {
-    var validProxies []string
-    for _, proxy := range proxies {
-        client := &http.Client{
-            Timeout: 5 * time.Second,
-            Transport: &http.Transport{
-                Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: proxy}),
-            },
-        }
-        resp, err := client.Get("http://example.com")
-        if err == nil && resp.StatusCode == http.StatusOK {
-            validProxies = append(validProxies, proxy)
-        }
-    }
-    proxies = validProxies
-}
-
-func readLines(filename string) ([]string, error) {
-    file, err := os.Open(filename)
-    if err != nil {
-        return nil, err
-    }
-    defer file.Close()
-
-    var lines []string
-    scanner := bufio.NewScanner(file)
-    for scanner.Scan() {
-        line := strings.TrimSpace(scanner.Text())
-        if line != "" {
-            lines = append(lines, line)
-        }
-    }
-    return lines, scanner.Err()
-}
-
-func extractParams(endpoint string) map[string][]string {
-    parsedURL, err := url.Parse(endpoint)
-    if err != nil {
-        return map[string][]string{}
-    }
-    return parsedURL.Query()
-}
-
-func buildURLWithParam(endpoint, param, payload string) string {
-    parsedURL, _ := url.Parse(endpoint)
-    query := parsedURL.Query()
-    query.Set(param, payload)
-    parsedURL.RawQuery = query.Encode()
-    return parsedURL.String()
-}
-
-func extractBaseEndpoint(url string, payloads []string) string {
-    for _, payload := range payloads {
-        if strings.HasSuffix(url, payload) {
-            return strings.TrimSuffix(url, payload)
-        }
-    }
-    return url
-}
-
+// logResult logs a message to the result file if it is specified
 func logResult(message string) {
     if resultFile != nil {
         resultMutex.Lock()
@@ -406,6 +425,7 @@ func logResult(message string) {
     }
 }
 
+// performRequestWithRetry performs an HTTP request with retries and exponential backoff
 func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int) bool {
     startTime := time.Now()
     for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -422,7 +442,9 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
                     break
                 }
                 if err != nil {
-                    fmt.Printf("%s[-] Error reading response line from %s (attempt %d): %v%s\n", Red, fullURL, attempt, err, Reset)
+                    if !hideNotVulnerable {
+                        fmt.Printf("%s[-] Error reading response line from %s (attempt %d): %v%s\n", Red, fullURL, attempt, err, Reset)
+                    }
                     logResult(fmt.Sprintf("[-] Error reading response line from %s (attempt %d): %v", fullURL, attempt, err))
                     return false
                 }
@@ -445,26 +467,37 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 
             // Check if the response status code is 200
             if resp.StatusCode == http.StatusOK {
-                fmt.Printf("%s[+] Potential LFI found: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
-                fmt.Printf("%s    Response: %s%s\n", Green, body, Reset)
-                logResult(fmt.Sprintf("[+] Potential LFI found: %s (Response time: %dms) - Response: %s", fullURL, responseTime, body))
-                return true
+                for _, indicator := range lfiIndicators {
+                    if strings.Contains(body, indicator) {
+                        fmt.Printf("%s[+] Vulnerable: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
+                        logResult(fmt.Sprintf("[+] Vulnerable: %s (Response time: %dms)", fullURL, responseTime))
+                        return true
+                    }
+                }
             }
 
+            if !hideNotVulnerable {
+                fmt.Printf("%s[-] Not Vulnerable: %s%s\n", Red, fullURL, Reset)
+            }
             return false
         }
 
         // Exponential backoff
         backoff := time.Duration(1<<uint(attempt-1)) * time.Second // 1s, 2s, 4s
         logResult(fmt.Sprintf("[-] Error on %s (attempt %d): %v - Retrying in %v", fullURL, attempt, err, backoff))
-        fmt.Printf("%s[-] Error on %s (attempt %d): %v - Retrying in %v%s\n", Red, fullURL, attempt, err, backoff, Reset)
+        if !hideNotVulnerable {
+            fmt.Printf("%s[-] Error on %s (attempt %d): %v - Retrying in %v%s\n", Red, fullURL, attempt, err, backoff, Reset)
+        }
         time.Sleep(backoff)
     }
     logResult(fmt.Sprintf("[-] Failed after %d attempts for %s", maxRetries, fullURL))
-    fmt.Printf("%s[-] Failed after %d attempts for %s%s\n", Red, maxRetries, fullURL, Reset)
+    if !hideNotVulnerable {
+        fmt.Printf("%s[-] Failed after %d attempts for %s%s\n", Red, maxRetries, fullURL, Reset)
+    }
     return false
 }
 
+// sendNormalRequest sends a normal request to the base URL
 func sendNormalRequest(client *http.Client, baseURL string) {
     req, err := http.NewRequest("GET", baseURL, nil)
     if err != nil {
@@ -480,6 +513,7 @@ func sendNormalRequest(client *http.Client, baseURL string) {
     resp.Body.Close()
 }
 
+// testCookies tests cookies with different payloads
 func testCookies(fullURL string, payloads []string, client *http.Client, testedEndpoints map[string]bool, totalURLs int, totalPayloads int) {
     parts := strings.SplitN(fullURL, " ", 2)
     if len(parts) < 1 {
@@ -504,10 +538,12 @@ func testCookies(fullURL string, payloads []string, client *http.Client, testedE
     }
 }
 
+// randomIP generates a random IP address
 func randomIP() string {
     return fmt.Sprintf("%d.%d.%d.%d", rand.Intn(256), rand.Intn(256), rand.Intn(256), rand.Intn(256))
 }
 
+// contains checks if a slice contains a specific item
 func contains(slice []int, item int) bool {
     for _, s := range slice {
         if s == item {
@@ -515,12 +551,4 @@ func contains(slice []int, item int) bool {
         }
     }
     return false
-}
-
-func atoi(s string) int {
-    i := 0
-    for _, c := range s {
-        i = i*10 + int(c-'0')
-    }
-    return i
 }
