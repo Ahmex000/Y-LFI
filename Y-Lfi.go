@@ -468,8 +468,7 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
             // If the response status code is 200, consider it vulnerable
             if resp.StatusCode == http.StatusOK {
                 fmt.Printf("%s[+] Vulnerable: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
-                fmt.Printf("%s    Response: %s%s\n", Green, body, Reset)
-                logResult(fmt.Sprintf("[+] Vulnerable: %s (Response time: %dms) - Response: %s", fullURL, responseTime, body))
+                logResult(fmt.Sprintf("[+] Vulnerable: %s (Response time: %dms)", fullURL, responseTime))
                 return true
             }
 
