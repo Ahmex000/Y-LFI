@@ -1,110 +1,148 @@
-# Y-Lfi
 
-A powerful Local File Inclusion (LFI) vulnerability scanner written in Go. This tool is designed to test web applications for LFI vulnerabilities by injecting payloads into URL parameters, POST requests, and cookies. It supports multiple features like proxy rotation, IP spoofing, and WAF evasion techniques.
+# Y-LFI: Local File Inclusion Scanner
+
+Y-LFI is a powerful and easy-to-use tool written in Go for detecting Local File Inclusion (LFI) vulnerabilities in web applications. It supports both GET and POST requests, allows custom headers and cookies, and can use a list of proxies for distributed scanning.
+
+---
 
 ## Features
-- **Multi-Method Support**: Scans with both GET and POST requests.
-- **Parameter Testing**: Automatically detects and tests multiple URL parameters.
-- **Cookie Testing**: Tests LFI payloads in cookies for POST requests.
-- **IP Spoofing**: Randomizes `X-Forwarded-For`, `Forwarded`, and `X-Real-IP` headers with fake IPs.
-- **Proxy Support**: Use a single proxy or a list of proxies for request rotation.
-- **User-Agent Rotation**: Includes a diverse list of User-Agents to mimic real traffic.
-- **WAF Evasion**: Sends normal requests at configurable intervals to avoid detection.
-- **Concurrency**: Multi-threaded scanning with adjustable thread count.
-- **Colorized Output**: Green for successful LFI detections, red for errors.
 
-## Prerequisites
-- **Go**: Ensure you have Go installed (version 1.16 or higher recommended). [Download Go](https://golang.org/dl/).
-- **Payloads File**: A text file with LFI payloads (e.g., `payloads.txt`).
+- **LFI Detection**: Scans for common LFI indicators like `/etc/passwd`.
+- **GET & POST Support**: Works with both GET and POST requests.
+- **Custom Headers**: Add custom headers to requests.
+- **Custom Cookies**: Add custom cookies to requests.
+- **Proxy Support**: Use a list of proxies for distributed scanning.
+- **Rate Limiting**: Control the number of requests per second.
+- **Output File**: Save results to a file for later analysis.
+
+---
 
 ## Installation
-1. Clone the repository:
+
+1. **Install Go**:
+   Make sure you have Go installed on your system. You can download it from [here](https://golang.org/dl/).
+
+2. **Clone the Repository**:
    ```bash
-   git clone https://github.com/Ahmex000/Y-LFI.git
+   git clone https://github.com/username/Y-LFI.git
    cd Y-LFI
    ```
 
+3. **Download Dependencies**:
+   ```bash
+   go mod download
+   ```
+
+4. **Build the Tool** (Optional):
+   ```bash
+   go build -o Y-LFI
+   ```
+
+---
+
 ## Usage
-Run the tool with the following command structure:
+
+### Basic Usage
+To scan a single URL with a payload file:
 ```bash
-go run Y-LFI.go -p <payloads_file> [-u <url/request_file> | -f <endpoints_file>] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file]
+go run Y-Lfi.go -p payloads.txt -u http://example.com/vulnerable.php
 ```
 
-### Options
-| Flag           | Description                                      | Default       | Example                              |
-|----------------|--------------------------------------------------|---------------|--------------------------------------|
-| `-p`           | Path to the payloads file (required)            | -             | `-p payloads.txt`                   |
-| `-u`           | Single URL (GET) or request file (POST)         | -             | `-u "https://example.com/?file="`   |
-| `-f`           | File containing endpoints (GET only)            | -             | `-f endpoints.txt`                  |
-| `-t`           | Number of concurrent threads                    | 10            | `-t 20`                             |
-| `-m`           | HTTP method (GET or POST)                       | GET           | `-m POST`                           |
-| `-r`           | Send normal request after this many requests    | 10            | `-r 5`                              |
-| `-proxy`       | Single proxy URL                                | -             | `-proxy "http://proxy.com:8080"`    |
-| `-proxyfile`   | File containing proxy list                      | -             | `-proxyfile proxies.txt`            |
+### Scan Multiple Endpoints
+To scan multiple endpoints from a file:
+```bash
+go run Y-Lfi.go -p payloads.txt -f endpoints.txt
+```
 
-### Examples
-1. **Scan a single URL with GET:**
-   ```bash
-   go run Y-LFI.go -p payloads.txt -u "https://example.com/image?filename=¶m2=" -t 10 -m GET -r 5
-   ```
-2. **Scan multiple endpoints from a file:**
-   ```bash
-   go run Y-LFI.go -p payloads.txt -f endpoints.txt -t 20 -m GET -r 10 -proxy "http://proxy.example.com:8080"
-   ```
-3. **Scan with POST requests from a request file:**
-   - Example `request.txt`:
-     ```
-     https://example.com/api {"key":"value"}
-     https://example.com/api name=test&age=25
-     ```
-   - Command:
-     ```bash
-     go run Y-LFI.go -p payloads.txt -u request.txt -t 10 -m POST -r 5 -proxyfile proxies.txt
-     ```
+### Use Proxies
+To use a list of proxies:
+```bash
+go run Y-Lfi.go -p payloads.txt -u http://example.com/vulnerable.php -proxyfile proxies.txt
+```
 
-### File Formats
-- **Payloads File (`payloads.txt`)**: One LFI payload per line.
-  ```
-  ../../../../etc/passwd
-  ../../../../proc/self/environ
-  ../../../../windows/win.ini
-  ```
-- **Endpoints File (`endpoints.txt`, for GET)**: One URL per line.
-  ```
-  https://example.com/?file=
-  https://test.com/index.php?page=
-  ```
-- **Request File (`request.txt`, for POST)**: Full request (URL + body) per line, separated by a space.
-  ```
-  https://example.com/api {"key":"value"}
-  https://example.com/api key=value
-  ```
-- **Proxy File (`proxies.txt`)**: One proxy URL per line.
-  ```
-  http://proxy1.example.com:8080
-  http://proxy2.example.com:3128
-  ```
+### Custom Headers
+To add custom headers:
+```bash
+go run Y-Lfi.go -p payloads.txt -u http://example.com/vulnerable.php -headers "Authorization: Bearer token,X-Custom-Header: value"
+```
 
-## Output
-- **Success**: Green text for detected LFI vulnerabilities.
-  ```
-  [+] Potential LFI found: https://example.com/?file=../../../../etc/passwd
-      Indicator: root
-  ```
-- **Errors**: Red text for failed requests or issues.
-  ```
-  [-] Error on https://example.com/?file=../../../../etc/passwd (attempt 1): dial tcp: connection refused
-  ```
+### Custom Cookies
+To add custom cookies:
+```bash
+go run Y-Lfi.go -p payloads.txt -u http://example.com/vulnerable.php -cookies "sessionid=12345; token=abcde"
+```
 
-## Notes
-- **Proxy Usage**: Ensure proxies are valid and functional. Invalid proxies will result in connection errors.
-- **WAF Evasion**: Adjust `-r` to send normal requests more or less frequently based on the target's WAF sensitivity.
-- **Legal Warning**: Use this tool only on systems you have explicit permission to test. Unauthorized scanning is illegal.
+### Save Results to a File
+To save results to a file:
+```bash
+go run Y-Lfi.go -p payloads.txt -u http://example.com/vulnerable.php -o results.txt
+```
+
+### Rate Limiting
+To limit the number of requests per second:
+```bash
+go run Y-Lfi.go -p payloads.txt -u http://example.com/vulnerable.php -rate 2
+```
+
+---
+
+## Command-Line Options
+
+| Option        | Description                                                                 |
+|---------------|-----------------------------------------------------------------------------|
+| `-p`          | Path to the payload file (required).                                        |
+| `-u`          | Single URL or request file for POST (required if `-f` is not used).         |
+| `-f`          | File containing endpoints (required if `-u` is not used).                   |
+| `-t`          | Number of concurrent threads (default: 10).                                 |
+| `-m`          | HTTP method (GET or POST, default: GET).                                    |
+| `-r`          | Send a normal request after this many requests (default: 10).               |
+| `-proxy`      | Single proxy (e.g., `http://proxy.example.com:8080`).                       |
+| `-proxyfile`  | File containing a list of proxies.                                          |
+| `-o`          | Output file for results (e.g., `results.txt`).                              |
+| `-rate`       | Max requests per second (default: 5).                                       |
+| `-headers`    | Custom headers (e.g., `Header1:Value1,Header2:Value2`).                     |
+| `-cookies`    | Custom cookies (e.g., `Cookie1=Value1; Cookie2=Value2`).                    |
+| `-timeout`    | Request timeout in seconds (default: 10).                                   |
+| `-skip-ssl-verify` | Skip SSL/TLS certificate verification.                                  |
+
+---
+
+## Example Payload File (`payloads.txt`)
+
+```plaintext
+../../../../etc/passwd
+../../../../etc/hosts
+../../../../etc/shadow
+```
+
+---
+
+## Example Endpoints File (`endpoints.txt`)
+
+```plaintext
+http://example.com/vulnerable.php?file=test
+http://example.com/another.php?page=index
+```
+
+---
+
+## Example Proxies File (`proxies.txt`)
+
+```plaintext
+http://proxy1.example.com:8080
+http://proxy2.example.com:8080
+http://proxy3.example.com:8080
+```
+
+---
+
+## Legal Disclaimer
+
+Usage of Y-LFI for attacking targets without prior mutual consent is illegal. It is the end user's responsibility to obey all applicable local, state, and federal laws. Developers assume no liability and are not responsible for any misuse or damage caused by this program.
+
+---
 
 ## Contributing
-Feel free to submit issues or pull requests if you have suggestions or improvements!
 
-
-## Credits
-Developed by [Ahmex000]. Powered by xAI's Grok.
+Contributions are welcome! Please open an issue or submit a pull request.
 
