@@ -21,13 +21,13 @@ A powerful Local File Inclusion (LFI) vulnerability scanner written in Go. This 
 1. Clone the repository:
    ```bash
    git clone https://github.com/Ahmex000/Y-LFI.git
-   cd lfi-scanner
+   cd Y-LFI
    ```
 
 ## Usage
 Run the tool with the following command structure:
 ```bash
-go run lfi.go -p <payloads_file> [-u <url/request_file> | -f <endpoints_file>] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file]
+go run Y-LFI.go -p <payloads_file> [-u <url/request_file> | -f <endpoints_file>] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file]
 ```
 
 ### Options
@@ -45,11 +45,11 @@ go run lfi.go -p <payloads_file> [-u <url/request_file> | -f <endpoints_file>] [
 ### Examples
 1. **Scan a single URL with GET:**
    ```bash
-   go run lfi.go -p payloads.txt -u "https://example.com/image?filename=¶m2=" -t 10 -m GET -r 5
+   go run Y-LFI.go -p payloads.txt -u "https://example.com/image?filename=¶m2=" -t 10 -m GET -r 5
    ```
 2. **Scan multiple endpoints from a file:**
    ```bash
-   go run lfi.go -p payloads.txt -f endpoints.txt -t 20 -m GET -r 10 -proxy "http://proxy.example.com:8080"
+   go run Y-LFI.go -p payloads.txt -f endpoints.txt -t 20 -m GET -r 10 -proxy "http://proxy.example.com:8080"
    ```
 3. **Scan with POST requests from a request file:**
    - Example `request.txt`:
@@ -59,7 +59,7 @@ go run lfi.go -p <payloads_file> [-u <url/request_file> | -f <endpoints_file>] [
      ```
    - Command:
      ```bash
-     go run lfi.go -p payloads.txt -u request.txt -t 10 -m POST -r 5 -proxyfile proxies.txt
+     go run Y-LFI.go -p payloads.txt -u request.txt -t 10 -m POST -r 5 -proxyfile proxies.txt
      ```
 
 ### File Formats
