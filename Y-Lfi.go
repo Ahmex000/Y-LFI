@@ -427,7 +427,7 @@ func logResult(message string) {
 
 // performRequestWithRetry performs an HTTP request with retries and exponential backoff
 
-func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int) bool {
+func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int, currentURL int, currentPayload int) bool {
     startTime := time.Now()
     for attempt := 1; attempt <= maxRetries; attempt++ {
         resp, err := client.Do(req)
@@ -469,15 +469,20 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
             if resp.StatusCode == http.StatusOK {
                 for _, indicator := range lfiIndicators {
                     if strings.Contains(body, indicator) {
-                        fmt.Printf("%s[*] %s Indicator: %s (Valid %s structure detected)%s\n", Green, fullURL, indicator, indicator, Reset)
+                        fmt.Printf("\r%s[*] %s Indicator: %s (Valid %s structure detected)%s\n", Green, fullURL, indicator, indicator, Reset)
                         logResult(fmt.Sprintf("[*] %s Indicator: %s (Valid %s structure detected)", fullURL, indicator, indicator))
                         return true
                     }
                 }
+
+                // If no indicators are found, but the status code is 200, still consider it vulnerable
+                fmt.Printf("\r%s[+] Vulnerable: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
+                logResult(fmt.Sprintf("[+] Vulnerable: %s (Response time: %dms)", fullURL, responseTime))
+                return true
             }
 
             if !hideNotVulnerable {
-                fmt.Printf("%s[-] Not Vulnerable: %s%s\n", Red, fullURL, Reset)
+                fmt.Printf("\r%s[-] Not Vulnerable: %s%s\n", Red, fullURL, Reset)
             }
             return false
         }
@@ -486,15 +491,60 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
         backoff := time.Duration(1<<uint(attempt-1)) * time.Second // 1s, 2s, 4s
         logResult(fmt.Sprintf("[-] Error on %s (attempt %d): %v - Retrying in %v", fullURL, attempt, err, backoff))
         if !hideNotVulnerable {
-            fmt.Printf("%s[-] Error on %s (attempt %d): %v - Retrying in %v%s\n", Red, fullURL, attempt, err, backoff, Reset)
+            fmt.Printf("\r%s[-] Error on %s (attempt %d): %v - Retrying in %v%s\n", Red, fullURL, attempt, err, backoff, Reset)
         }
         time.Sleep(backoff)
     }
     logResult(fmt.Sprintf("[-] Failed after %d attempts for %s", maxRetries, fullURL))
     if !hideNotVulnerable {
-        fmt.Printf("%s[-] Failed after %d attempts for %s%s\n", Red, maxRetries, fullURL, Reset)
+        fmt.Printf("\r%s[-] Failed after %d attempts for %s%s\n", Red, maxRetries, fullURL, Reset)
     }
     return false
+}
+
+func worker(urlChan <-chan string, payloads []string, method string, reqInterval int, requestCount *int, countMutex *sync.Mutex, wg *sync.WaitGroup, headers string, cookies string, timeout int, skipSSLVerify bool, totalURLs int, totalPayloads int) {
+    defer wg.Done()
+
+    testedEndpoints := make(map[string]bool)
+    rand.Seed(time.Now().UnixNano())
+
+    for fullURL := range urlChan {
+        if err := limiter.Wait(context.Background()); err != nil {
+            fmt.Printf("\r%s[-] Rate limit error for %s: %v%s\n", Red, fullURL, err, Reset)
+            continue
+        }
+
+        baseEndpoint := extractBaseEndpoint(fullURL, payloads)
+        if testedEndpoints[baseEndpoint] {
+            continue
+        }
+
+        client := createClient(timeout, skipSSLVerify)
+        req, err := buildRequest(method, fullURL, payloads, headers, cookies)
+        if err != nil {
+            fmt.Printf("\r%s[-] Error building request for %s: %v%s\n", Red, fullURL, err, Reset)
+            logResult(fmt.Sprintf("[-] Error building request for %s: %v", fullURL, err))
+            continue
+        }
+
+        if performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads)) {
+            countMutex.Lock()
+            *requestCount++
+            if *requestCount%reqInterval == 0 {
+                sendNormalRequest(client, baseEndpoint)
+            }
+            countMutex.Unlock()
+
+            if method == "POST" {
+                testCookies(fullURL, payloads, client, testedEndpoints, totalURLs, totalPayloads)
+            }
+        }
+
+        // Update progress
+        if showProgress {
+            fmt.Printf("\rURLs: [%d/%d] | Payloads: [%d/%d]", *requestCount+1, totalURLs, len(payloads), totalPayloads)
+        }
+    }
 }
 
 // sendNormalRequest sends a normal request to the base URL
