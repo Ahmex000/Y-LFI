@@ -1,4 +1,4 @@
-# YLfi
+# Y-Lfi
 
 A powerful Local File Inclusion (LFI) vulnerability scanner written in Go. This tool is designed to test web applications for LFI vulnerabilities by injecting payloads into URL parameters, POST requests, and cookies. It supports multiple features like proxy rotation, IP spoofing, and WAF evasion techniques.
 
@@ -20,7 +20,7 @@ A powerful Local File Inclusion (LFI) vulnerability scanner written in Go. This 
 ## Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Ahmex000/YLFI.git
+   git clone https://github.com/Ahmex000/Y-LFI.git
    cd lfi-scanner
    ```
 
