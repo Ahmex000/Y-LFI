@@ -78,13 +78,15 @@ var (
 func main() {
 	// Print banner
 	fmt.Println(White + `
-    _______    _______    _______    _______    _______  
-   / _____/   / _____/   / _____/   / _____/   / _____/   
-  / /         / /        / /        / /        / /        
- / /___      / /___     / /___     / /___     / /___      
-/______/    /______/   /______/   /______/   /______/     
+__     __     _      ______ _____
+\ \   / /    | |    |  ____|_   _|
+ \ \_/ /_____| |    | |__    | |
+  \   /______| |    |  __|   | |
+   | |       | |____| |     _| |_
+   |_|       |______|_|    |_____|    
+   
 ` + Reset)
-	fmt.Println(Red + `        -/|\    Y-LFI    -/|\` + Reset)
+	fmt.Println(Red + `        -/|\    Sally 3ala Mohammed    -/|\` + Reset)
 	fmt.Println(White + `           Created by Ahmex000` + Reset)
 
 	// Legal disclaimer
