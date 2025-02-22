@@ -426,6 +426,7 @@ func logResult(message string) {
 }
 
 // performRequestWithRetry performs an HTTP request with retries and exponential backoff
+
 func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int) bool {
     startTime := time.Now()
     for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -433,7 +434,6 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
         if err == nil {
             defer resp.Body.Close()
 
-            // Use bufio for memory-efficient reading
             reader := bufio.NewReader(resp.Body)
             var bodyBuilder strings.Builder
             for {
@@ -465,15 +465,12 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
                 return false
             }
 
-            // Check if the response status code is 200
+            // If the response status code is 200, consider it vulnerable
             if resp.StatusCode == http.StatusOK {
-                for _, indicator := range lfiIndicators {
-                    if strings.Contains(body, indicator) {
-                        fmt.Printf("%s[+] Vulnerable: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
-                        logResult(fmt.Sprintf("[+] Vulnerable: %s (Response time: %dms)", fullURL, responseTime))
-                        return true
-                    }
-                }
+                fmt.Printf("%s[+] Vulnerable: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
+                fmt.Printf("%s    Response: %s%s\n", Green, body, Reset)
+                logResult(fmt.Sprintf("[+] Vulnerable: %s (Response time: %dms) - Response: %s", fullURL, responseTime, body))
+                return true
             }
 
             if !hideNotVulnerable {
