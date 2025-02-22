@@ -78,15 +78,13 @@ var (
 func main() {
 	// Print banner
 	fmt.Println(White + `
-__     __     _      ______ _____
-\ \   / /    | |    |  ____|_   _|
- \ \_/ /_____| |    | |__    | |
-  \   /______| |    |  __|   | |
-   | |       | |____| |     _| |_
-   |_|       |______|_|    |_____|    
-   
+    _______    _______    _______    _______    _______  
+   / _____/   / _____/   / _____/   / _____/   / _____/   
+  / /         / /        / /        / /        / /        
+ / /___      / /___     / /___     / /___     / /___      
+/______/    /______/   /______/   /______/   /______/     
 ` + Reset)
-	fmt.Println(Red + `        -/|\    Sally 3ala Mohammed    -/|\` + Reset)
+	fmt.Println(Red + `        -/|\    Y-LFI    -/|\` + Reset)
 	fmt.Println(White + `           Created by Ahmex000` + Reset)
 
 	// Legal disclaimer
@@ -394,7 +392,8 @@ func logResult(message string) {
 }
 
 // performRequestWithRetry performs an HTTP request with retries and exponential backoff
-func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int, currentURL int, currentPayload int) bool {
+
+func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int, currentURL int, currentPayload int) (bool, int) {
 	startTime := time.Now()
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		resp, err := client.Do(req)
@@ -413,7 +412,7 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 						fmt.Printf("%s[-] Error reading response line from %s (attempt %d): %v%s\n", Red, fullURL, attempt, err, Reset)
 						logResult(fmt.Sprintf("[-] Error reading response line from %s (attempt %d): %v", fullURL, attempt, err))
 					}
-					return false
+					return false, 0
 				}
 				bodyBuilder.WriteString(line)
 			}
@@ -424,25 +423,50 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 
 			// Check if the response status code is excluded
 			if contains(excludeCodes, resp.StatusCode) {
-				return false
+				fmt.Printf("\r%s[-] Not Vulnerable: %s | Response Size: [ [ %d bytes%s]]\n", Red, fullURL, len(body), Reset)
+				return false, len(body)
 			}
 
 			// Check if the response size is excluded
 			if contains(excludeSizes, len(body)) {
-				return false
+				fmt.Printf("\r%s[-] Not Vulnerable: %s | Response Size: [ [ %d bytes%s]]\n", Red, fullURL, len(body), Reset)
+				return false, len(body)
+			}
+
+			// If the response status code is 301 or 302, check for specific indicators
+			if resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound {
+				// إذا كان الرد يحتوي على مؤشرات معينة، اعتبره مصابًا
+				indicators := []string{"/etc/passwd", "/root/", "root", "/etc/", "/etc", "etc/", "/bin", "bin/"}
+				for _, indicator := range indicators {
+					if strings.Contains(body, indicator) {
+						fmt.Printf("\r%s[*] %s Indicator: %s (Valid %s structure detected) | Response Size: [ [ %d bytes%s]]\n", Green, fullURL, indicator, indicator, len(body), Reset)
+						logResult(fmt.Sprintf("[*] %s Indicator: %s (Valid %s structure detected)", fullURL, indicator, indicator))
+						return true, len(body)
+					}
+				}
+				// إذا لم يتم العثور على مؤشرات، اعتبره غير مصاب
+				fmt.Printf("\r%s[-] Not Vulnerable: %s | Response Size:  [ %d bytes%s]\n", Red, fullURL, len(body), Reset)
+				return false, len(body)
 			}
 
 			// If the response status code is 200, check for indicators
 			if resp.StatusCode == http.StatusOK {
 				for _, indicator := range lfiIndicators {
 					if strings.Contains(body, indicator) {
+						// إرسال طلب بدون معاملات ومقارنة الأحجام
+						responseBodyWithoutPayload, err := sendRequestWithoutPayload(client, req.Method, fullURL)
+						if err == nil && normalizeResponse(responseBodyWithoutPayload) == normalizeResponse(body) {
+							fmt.Printf("\r%s[-] False Positive: %s | Response Size:  [ %d bytes%s]\n", Yellow, fullURL, len(body), Reset)
+							return false, len(body)
+						}
+
 						successfulMutex.Lock()
 						successfulPayloads++
 						successfulMutex.Unlock()
 
-						fmt.Printf("\r%s[*] %s Indicator: %s (Valid %s structure detected)%s\n", Green, fullURL, indicator, indicator, Reset)
+						fmt.Printf("\r%s[*] %s Indicator: %s (Valid %s structure detected) | Response Size:  [ %d bytes%s]\n", Green, fullURL, indicator, indicator, len(body), Reset)
 						logResult(fmt.Sprintf("[*] %s Indicator: %s (Valid %s structure detected)", fullURL, indicator, indicator))
-						return true
+						return true, len(body)
 					}
 				}
 
@@ -451,15 +475,15 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 				successfulPayloads++
 				successfulMutex.Unlock()
 
-				fmt.Printf("\r%s[+] Vulnerable: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
+				fmt.Printf("\r%s[+] Vulnerable: %s (Response time: %dms) | Response Size:  [ %d bytes %s]\n", Green, fullURL, responseTime, len(body), Reset)
 				logResult(fmt.Sprintf("[+] Vulnerable: %s (Response time: %dms)", fullURL, responseTime))
-				return true
+				return true, len(body)
 			}
 
 			if !hideNotVulnerable {
-				fmt.Printf("\r%s[-] Not Vulnerable: %s%s\n", Red, fullURL, Reset)
+				fmt.Printf("\r%s[-] Not Vulnerable: %s | Response Size:  [ %d bytes%s]\n", Red, fullURL, len(body), Reset)
 			}
-			return false
+			return false, len(body)
 		}
 
 		// Exponential backoff
@@ -474,7 +498,51 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 	if !hideNotVulnerable {
 		fmt.Printf("\r%s[-] Failed after %d attempts for %s%s\n", Red, maxRetries, fullURL, Reset)
 	}
-	return false
+	return false, 0
+}
+
+// sendRequestWithoutPayload sends a request without any payload
+func sendRequestWithoutPayload(client *http.Client, method, fullURL string) (string, error) {
+	req, err := http.NewRequest(method, fullURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	// إضافة نفس الرؤوس (Headers) مثل الطلب الأول
+	req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+	req.Header.Set("X-Forwarded-For", randomIP())
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	var bodyBuilder strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		bodyBuilder.WriteString(line)
+	}
+	body := bodyBuilder.String()
+
+	return body, nil
+}
+
+// normalizeResponse removes dynamic content (like dates and times) from the response
+func normalizeResponse(body string) string {
+	// تجاهل المحتوى الديناميكي (مثل التواريخ والأوقات)
+	body = strings.ReplaceAll(body, "\n", "") // تجاهل الأسطر الجديدة
+	body = strings.ReplaceAll(body, "\r", "") // تجاهل الأحرف الخاصة
+	body = strings.ReplaceAll(body, " ", "")  // تجاهل المسافات
+	return body
 }
 
 func worker(urlChan <-chan string, payloads []string, method string, reqInterval int, requestCount *int, countMutex *sync.Mutex, wg *sync.WaitGroup, headers string, cookies string, timeout int, skipSSLVerify bool, totalURLs int, totalPayloads int) {
@@ -502,24 +570,29 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
 			continue
 		}
 
-		if performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads)) {
-			countMutex.Lock()
-			*requestCount++
-			if *requestCount%reqInterval == 0 {
-				sendNormalRequest(client, baseEndpoint)
-			}
-			countMutex.Unlock()
-
-			if method == "POST" {
-				testCookies(fullURL, payloads, client, testedEndpoints, totalURLs, totalPayloads)
-			}
+		isVulnerable, responseSize := performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads))
+		if isVulnerable {
+			// إذا كان الـ URL ضعيفًا، قم بزيادة successfulPayloads
+			successfulMutex.Lock()
+			successfulPayloads++
+			successfulMutex.Unlock()
 		}
 
 		// Update progress
 		if showProgress {
 			currentURL := (*requestCount / len(payloads)) + 1
 			currentPayload := (*requestCount % len(payloads)) + 1
-			fmt.Printf("\rURLs: [%d/%d] | Payloads: [%d/%d] | Found: %d", currentURL, totalURLs, currentPayload, totalPayloads, successfulPayloads)
+			fmt.Printf("\rURLs: [%d/%d] | Payloads: [%d/%d] | Found: %d | Response Size: %d bytes", currentURL, totalURLs, currentPayload, totalPayloads, successfulPayloads, responseSize)
+		}
+
+		// زيادة requestCount مع كل طلب
+		countMutex.Lock()
+		*requestCount++
+		countMutex.Unlock()
+
+		// إرسال طلب عادي بعد كل reqInterval طلبات
+		if *requestCount%reqInterval == 0 {
+			sendNormalRequest(client, baseEndpoint)
 		}
 	}
 }
@@ -559,7 +632,8 @@ func testCookies(fullURL string, payloads []string, client *http.Client, testedE
 		req.Header.Set("Cookie", "test="+payload)
 		req.Header.Set("X-Forwarded-For", randomIP())
 
-		if performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, 0, 0) {
+		isVulnerable, _ := performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, 0, 0)
+		if isVulnerable {
 			testedEndpoints[baseURL] = true
 		}
 	}
