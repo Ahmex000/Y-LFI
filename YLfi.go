@@ -350,3 +350,4 @@ func readLines(filename string) ([]string, error) {
         }
     }
     return lines, scanner.Err()
+}
