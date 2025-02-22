@@ -17,9 +17,10 @@ import (
 
 // ANSI color codes
 const (
-    Red   = "\033[31m"
-    Green = "\033[32m"
-    Reset = "\033[0m"
+    Red    = "\033[31m"
+    White  = "\033[37m"
+    Reset  = "\033[0m"
+    Yellow = "\033[33m"
 )
 
 // LFI indicators to check in responses
@@ -50,6 +51,25 @@ var userAgents = []string{
 var proxies []string
 
 func main() {
+    // Print banner
+    fmt.Println(White + `    
+__     __     _      ______ _____
+\ \   / /    | |    |  ____|_   _|
+ \ \_/ /_____| |    | |__    | |
+  \   /______| |    |  __|   | |
+   | |       | |____| |     _| |_
+   |_|       |______|_|    |_____|
+    ` + Reset)
+    fmt.Println(Red + `        -/|\    Y-LFI    -/|\` + Reset)
+    fmt.Println(White + `           Created by Ahmex000` + Reset)
+
+    // Legal disclaimer
+    fmt.Println(Yellow + `
+[!] Legal disclaimer: Usage of YLfi for attacking targets without prior mutual consent
+is illegal. It is the end user's responsibility to obey all applicable local, state 
+and federal laws. Developers assume no liability and are not responsible for any 
+misuse or damage caused by this program.` + Reset)
+
     payloadFile := flag.String("p", "", "Path to payload file")
     urlFlag := flag.String("u", "", "Single URL or request file for POST")
     endpointFile := flag.String("f", "", "File containing endpoints")
@@ -61,7 +81,7 @@ func main() {
     flag.Parse()
 
     if *payloadFile == "" || (*urlFlag == "" && *endpointFile == "") {
-        fmt.Println("Usage: go run script.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies.txt]")
+        fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file]")
         os.Exit(1)
     }
 
