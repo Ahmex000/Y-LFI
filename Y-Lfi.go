@@ -18,6 +18,7 @@ import (
     "sync"
     "time"
 
+    "golang.org/x/net/http2"
     "golang.org/x/time/rate"
 )
 
@@ -37,8 +38,6 @@ var lfiIndicators = []string{
 
 const (
     maxRetries       = 3
-    minResponseSize  = 50 // Minimum response size to consider valid
-    passwdRegex      = `^[^:]+:[^:]+:[0-9]+:[0-9]+:[^:]+:[^:]+:[^:]+$` // Regex for /etc/passwd line
     rateLimitPerSec  = 5  // Max requests per second
 )
 
@@ -51,6 +50,8 @@ var (
     limiter      = rate.NewLimiter(rate.Limit(rateLimitPerSec), 1) // Rate limiter
     showProgress bool
     vulnOnly     bool
+    excludeSizes []int
+    excludeCodes []int
 )
 
 // Expanded User-Agents list
@@ -104,13 +105,29 @@ misuse or damage caused by this program.` + Reset)
     skipSSLVerify := flag.Bool("skip-ssl-verify", false, "Skip SSL/TLS certificate verification")
     flag.BoolVar(&showProgress, "show-progress", true, "Show progress during scanning")
     flag.BoolVar(&vulnOnly, "vuln-only", false, "Show only vulnerable URLs")
+    excludeSizesFlag := flag.String("exclude-sizes", "", "Comma-separated list of response sizes to exclude")
+    excludeCodesFlag := flag.String("exclude-codes", "", "Comma-separated list of status codes to exclude")
     flag.Parse()
 
     limiter.SetLimit(rate.Limit(*rateLimit)) // Update rate limit from flag
 
     if *payloadFile == "" || (*urlFlag == "" && *endpointFile == "") {
-        fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file] [-o output_file] [-rate requests_per_sec] [-headers 'Header1:Value1,Header2:Value2'] [-cookies 'Cookie1=Value1; Cookie2=Value2'] [-timeout 10] [-skip-ssl-verify] [-show-progress] [-vuln-only]")
+        fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file] [-o output_file] [-rate requests_per_sec] [-headers 'Header1:Value1,Header2:Value2'] [-cookies 'Cookie1=Value1; Cookie2=Value2'] [-timeout 10] [-skip-ssl-verify] [-show-progress] [-vuln-only] [-exclude-sizes 50,100] [-exclude-codes 404,500]")
         os.Exit(1)
+    }
+
+    // Parse exclude sizes and codes
+    if *excludeSizesFlag != "" {
+        sizes := strings.Split(*excludeSizesFlag, ",")
+        for _, size := range sizes {
+            excludeSizes = append(excludeSizes, atoi(size))
+        }
+    }
+    if *excludeCodesFlag != "" {
+        codes := strings.Split(*excludeCodesFlag, ",")
+        for _, code := range codes {
+            excludeCodes = append(excludeCodes, atoi(code))
+        }
     }
 
     // Initialize output file if specified
@@ -235,7 +252,7 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
 
 func createClient(timeout int, skipSSLVerify bool) *http.Client {
     transport := &http.Transport{
-        ForceAttemptHTTP2: false,
+        ForceAttemptHTTP2: true, // Enable HTTP/2
         TLSClientConfig: &tls.Config{
             InsecureSkipVerify: skipSSLVerify,
         },
@@ -416,49 +433,25 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
             responseTime := time.Since(startTime).Milliseconds()
             logResult(fmt.Sprintf("Response time for %s: %dms", fullURL, responseTime))
 
-            // Check response size
-            if len(body) < minResponseSize {
-                logResult(fmt.Sprintf("[!] Warning: Response too small (<50 bytes) for %s - Possible WAF block or error", fullURL))
-                fmt.Printf("%s[!] Warning: Response too small (<50 bytes) for %s (Response time: %dms) - Possible WAF block or error%s\n", Yellow, fullURL, responseTime, Reset)
+            // Check if the response status code is excluded
+            if contains(excludeCodes, resp.StatusCode) {
                 return false
             }
 
-            // Check for LFI indicators using regex for /etc/passwd
-            lfiFound := false
-            passwdRe := regexp.MustCompile(passwdRegex)
-            if strings.Contains(body, "/etc/passwd") {
-                lines := strings.Split(body, "\n")
-                for _, line := range lines {
-                    if passwdRe.MatchString(strings.TrimSpace(line)) {
-                        fmt.Printf("%s[+] Potential LFI found: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
-                        fmt.Printf("%s    Indicator: /etc/passwd (Valid passwd structure detected)%s\n", Green, Reset)
-                        logResult(fmt.Sprintf("[+] Potential LFI found: %s (Response time: %dms) - Indicator: /etc/passwd (Valid passwd structure detected)", fullURL, responseTime))
-                        lfiFound = true
-                        break
-                    }
-                }
+            // Check if the response size is excluded
+            if contains(excludeSizes, len(body)) {
+                return false
             }
 
-            // Check for PHP errors or WAF patterns
-            if strings.Contains(body, "Warning: include(") || strings.Contains(body, "failed to open stream") {
-                logResult(fmt.Sprintf("[!] Warning: Possible PHP error or WAF block detected in %s (Response time: %dms) - Check response", fullURL, responseTime))
-                fmt.Printf("%s[!] Warning: Possible PHP error or WAF block detected in %s (Response time: %dms) - Check response%s\n", Yellow, fullURL, responseTime, Reset)
+            // Check if the response status code is 200
+            if resp.StatusCode == http.StatusOK {
+                fmt.Printf("%s[+] Potential LFI found: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
+                fmt.Printf("%s    Response: %s%s\n", Green, body, Reset)
+                logResult(fmt.Sprintf("[+] Potential LFI found: %s (Response time: %dms) - Response: %s", fullURL, responseTime, body))
+                return true
             }
 
-            // Check for JSON response
-            if strings.HasPrefix(http.DetectContentType([]byte(body)), "application/json") {
-                var jsonData map[string]interface{}
-                if err := json.Unmarshal([]byte(body), &jsonData); err == nil {
-                    if msg, ok := jsonData["message"].(string); ok {
-                        if strings.Contains(strings.ToLower(msg), "error") || strings.Contains(strings.ToLower(msg), "blocked") {
-                            logResult(fmt.Sprintf("[!] Warning: JSON response indicates error or block in %s (Response time: %dms) - Message: %s", fullURL, responseTime, msg))
-                            fmt.Printf("%s[!] Warning: JSON response indicates error or block in %s (Response time: %dms) - Message: %s%s\n", Yellow, fullURL, responseTime, msg, Reset)
-                        }
-                    }
-                }
-            }
-
-            return lfiFound
+            return false
         }
 
         // Exponential backoff
@@ -513,4 +506,21 @@ func testCookies(fullURL string, payloads []string, client *http.Client, testedE
 
 func randomIP() string {
     return fmt.Sprintf("%d.%d.%d.%d", rand.Intn(256), rand.Intn(256), rand.Intn(256), rand.Intn(256))
+}
+
+func contains(slice []int, item int) bool {
+    for _, s := range slice {
+        if s == item {
+            return true
+        }
+    }
+    return false
+}
+
+func atoi(s string) int {
+    i := 0
+    for _, c := range s {
+        i = i*10 + int(c-'0')
+    }
+    return i
 }
