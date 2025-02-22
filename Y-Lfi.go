@@ -76,7 +76,7 @@ __     __     _      ______ _____
   \   /______| |    |  __|   | |
    | |       | |____| |     _| |_
    |_|       |______|_|    |_____|
-   
+    
 ` + Reset)
     fmt.Println(Red + `        -/|\    Y-LFI    -/|\` + Reset)
     fmt.Println(White + `           Created by Ahmex000` + Reset)
@@ -249,6 +249,17 @@ func createClient(timeout int, skipSSLVerify bool) *http.Client {
     }
 }
 
+func getNextProxy() string {
+    proxyMutex.Lock()
+    defer proxyMutex.Unlock()
+    if len(proxies) == 0 {
+        return ""
+    }
+    proxy := proxies[proxyIndex]
+    proxyIndex = (proxyIndex + 1) % len(proxies)
+    return proxy
+}
+
 func buildRequest(method, fullURL string, payloads []string, headers string, cookies string) (*http.Request, error) {
     var req *http.Request
     var err error
@@ -325,4 +336,179 @@ func validateProxies() {
     proxies = validProxies
 }
 
-// Rest of the functions remain unchanged...
+func readLines(filename string) ([]string, error) {
+    file, err := os.Open(filename)
+    if err != nil {
+        return nil, err
+    }
+    defer file.Close()
+
+    var lines []string
+    scanner := bufio.NewScanner(file)
+    for scanner.Scan() {
+        line := strings.TrimSpace(scanner.Text())
+        if line != "" {
+            lines = append(lines, line)
+        }
+    }
+    return lines, scanner.Err()
+}
+
+func extractParams(endpoint string) map[string][]string {
+    parsedURL, err := url.Parse(endpoint)
+    if err != nil {
+        return map[string][]string{}
+    }
+    return parsedURL.Query()
+}
+
+func buildURLWithParam(endpoint, param, payload string) string {
+    parsedURL, _ := url.Parse(endpoint)
+    query := parsedURL.Query()
+    query.Set(param, payload)
+    parsedURL.RawQuery = query.Encode()
+    return parsedURL.String()
+}
+
+func extractBaseEndpoint(url string, payloads []string) string {
+    for _, payload := range payloads {
+        if strings.HasSuffix(url, payload) {
+            return strings.TrimSuffix(url, payload)
+        }
+    }
+    return url
+}
+
+func logResult(message string) {
+    if resultFile != nil {
+        resultMutex.Lock()
+        defer resultMutex.Unlock()
+        fmt.Fprintf(resultFile, "%s\n", message)
+    }
+}
+
+func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string) bool {
+    startTime := time.Now()
+    for attempt := 1; attempt <= maxRetries; attempt++ {
+        resp, err := client.Do(req)
+        if err == nil {
+            defer resp.Body.Close()
+
+            // Use bufio for memory-efficient reading
+            reader := bufio.NewReader(resp.Body)
+            var bodyBuilder strings.Builder
+            for {
+                line, err := reader.ReadString('\n')
+                if err == io.EOF {
+                    break
+                }
+                if err != nil {
+                    fmt.Printf("%s[-] Error reading response line from %s (attempt %d): %v%s\n", Red, fullURL, attempt, err, Reset)
+                    logResult(fmt.Sprintf("[-] Error reading response line from %s (attempt %d): %v", fullURL, attempt, err))
+                    return false
+                }
+                bodyBuilder.WriteString(line)
+            }
+            body := bodyBuilder.String()
+
+            responseTime := time.Since(startTime).Milliseconds()
+            logResult(fmt.Sprintf("Response time for %s: %dms", fullURL, responseTime))
+
+            // Check response size
+            if len(body) < minResponseSize {
+                logResult(fmt.Sprintf("[!] Warning: Response too small (<50 bytes) for %s - Possible WAF block or error", fullURL))
+                fmt.Printf("%s[!] Warning: Response too small (<50 bytes) for %s (Response time: %dms) - Possible WAF block or error%s\n", Yellow, fullURL, responseTime, Reset)
+                return false
+            }
+
+            // Check for LFI indicators using regex for /etc/passwd
+            lfiFound := false
+            passwdRe := regexp.MustCompile(passwdRegex)
+            if strings.Contains(body, "/etc/passwd") {
+                lines := strings.Split(body, "\n")
+                for _, line := range lines {
+                    if passwdRe.MatchString(strings.TrimSpace(line)) {
+                        fmt.Printf("%s[+] Potential LFI found: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
+                        fmt.Printf("%s    Indicator: /etc/passwd (Valid passwd structure detected)%s\n", Green, Reset)
+                        logResult(fmt.Sprintf("[+] Potential LFI found: %s (Response time: %dms) - Indicator: /etc/passwd (Valid passwd structure detected)", fullURL, responseTime))
+                        lfiFound = true
+                        break
+                    }
+                }
+            }
+
+            // Check for PHP errors or WAF patterns
+            if strings.Contains(body, "Warning: include(") || strings.Contains(body, "failed to open stream") {
+                logResult(fmt.Sprintf("[!] Warning: Possible PHP error or WAF block detected in %s (Response time: %dms) - Check response", fullURL, responseTime))
+                fmt.Printf("%s[!] Warning: Possible PHP error or WAF block detected in %s (Response time: %dms) - Check response%s\n", Yellow, fullURL, responseTime, Reset)
+            }
+
+            // Check for JSON response
+            if strings.HasPrefix(http.DetectContentType([]byte(body)), "application/json") {
+                var jsonData map[string]interface{}
+                if err := json.Unmarshal([]byte(body), &jsonData); err == nil {
+                    if msg, ok := jsonData["message"].(string); ok {
+                        if strings.Contains(strings.ToLower(msg), "error") || strings.Contains(strings.ToLower(msg), "blocked") {
+                            logResult(fmt.Sprintf("[!] Warning: JSON response indicates error or block in %s (Response time: %dms) - Message: %s", fullURL, responseTime, msg))
+                            fmt.Printf("%s[!] Warning: JSON response indicates error or block in %s (Response time: %dms) - Message: %s%s\n", Yellow, fullURL, responseTime, msg, Reset)
+                        }
+                    }
+                }
+            }
+
+            return lfiFound
+        }
+
+        // Exponential backoff
+        backoff := time.Duration(1<<uint(attempt-1)) * time.Second // 1s, 2s, 4s
+        logResult(fmt.Sprintf("[-] Error on %s (attempt %d): %v - Retrying in %v", fullURL, attempt, err, backoff))
+        fmt.Printf("%s[-] Error on %s (attempt %d): %v - Retrying in %v%s\n", Red, fullURL, attempt, err, backoff, Reset)
+        time.Sleep(backoff)
+    }
+    logResult(fmt.Sprintf("[-] Failed after %d attempts for %s", maxRetries, fullURL))
+    fmt.Printf("%s[-] Failed after %d attempts for %s%s\n", Red, maxRetries, fullURL, Reset)
+    return false
+}
+
+func sendNormalRequest(client *http.Client, baseURL string) {
+    req, err := http.NewRequest("GET", baseURL, nil)
+    if err != nil {
+        return
+    }
+    req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
+    req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+    resp, err := client.Do(req)
+    if err != nil {
+        fmt.Printf("%s[-] Error sending normal request to %s: %v%s\n", Red, baseURL, err, Reset)
+        return
+    }
+    resp.Body.Close()
+}
+
+func testCookies(fullURL string, payloads []string, client *http.Client, testedEndpoints map[string]bool) {
+    parts := strings.SplitN(fullURL, " ", 2)
+    if len(parts) < 1 {
+        return
+    }
+    baseURL := parts[0]
+
+    for _, payload := range payloads {
+        req, err := http.NewRequest("POST", baseURL, nil)
+        if err != nil {
+            continue
+        }
+
+        req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
+        req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+        req.Header.Set("Cookie", "test="+payload)
+        req.Header.Set("X-Forwarded-For", randomIP())
+
+        if performRequestWithRetry(client, req, fullURL) {
+            testedEndpoints[baseURL] = true
+        }
+    }
+}
+
+func randomIP() string {
+    return fmt.Sprintf("%d.%d.%d.%d", rand.Intn(256), rand.Intn(256), rand.Intn(256), rand.Intn(256))
+}
