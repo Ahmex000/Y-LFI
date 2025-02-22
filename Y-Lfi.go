@@ -465,11 +465,15 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
                 return false
             }
 
-            // If the response status code is 200, consider it vulnerable
+            // If the response status code is 200, check for indicators
             if resp.StatusCode == http.StatusOK {
-                fmt.Printf("%s[+] Vulnerable: %s (Response time: %dms)%s\n", Green, fullURL, responseTime, Reset)
-                logResult(fmt.Sprintf("[+] Vulnerable: %s (Response time: %dms)", fullURL, responseTime))
-                return true
+                for _, indicator := range lfiIndicators {
+                    if strings.Contains(body, indicator) {
+                        fmt.Printf("%s[*] %s Indicator: %s (Valid %s structure detected)%s\n", Green, fullURL, indicator, indicator, Reset)
+                        logResult(fmt.Sprintf("[*] %s Indicator: %s (Valid %s structure detected)", fullURL, indicator, indicator))
+                        return true
+                    }
+                }
             }
 
             if !hideNotVulnerable {
