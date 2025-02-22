@@ -526,19 +526,19 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
             logResult(fmt.Sprintf("[-] Error building request for %s: %v", fullURL, err))
             continue
         }
+        
+if performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads)) {
+    countMutex.Lock()
+    *requestCount++
+    if *requestCount%reqInterval == 0 {
+        sendNormalRequest(client, baseEndpoint)
+    }
+    countMutex.Unlock()
 
-        if performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads)) {
-            countMutex.Lock()
-            *requestCount++
-            if *requestCount%reqInterval == 0 {
-                sendNormalRequest(client, baseEndpoint)
-            }
-            countMutex.Unlock()
-
-            if method == "POST" {
-                testCookies(fullURL, payloads, client, testedEndpoints, totalURLs, totalPayloads)
-            }
-        }
+    if method == "POST" {
+        testCookies(fullURL, payloads, client, testedEndpoints, totalURLs, totalPayloads)
+    }
+}
 
         // Update progress
         if showProgress {
