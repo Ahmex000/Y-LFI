@@ -24,7 +24,7 @@ Y-LFI is a powerful and easy-to-use tool written in Go for detecting Local File 
 
 2. **Clone the Repository**:
    ```bash
-   git clone https://github.com/username/Y-LFI.git
+   git clone https://github.com/Ahmex000/Y-LFI.git
    cd Y-LFI
    ```
 
