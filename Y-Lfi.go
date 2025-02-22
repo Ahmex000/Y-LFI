@@ -49,6 +49,8 @@ var (
     resultFile   *os.File
     resultMutex  sync.Mutex
     limiter      = rate.NewLimiter(rate.Limit(rateLimitPerSec), 1) // Rate limiter
+    showProgress bool
+    vulnOnly     bool
 )
 
 // Expanded User-Agents list
@@ -70,13 +72,11 @@ var userAgents = []string{
 func main() {
     // Print banner
     fmt.Println(White + `
-__     __     _      ______ _____
-\ \   / /    | |    |  ____|_   _|
- \ \_/ /_____| |    | |__    | |
-  \   /______| |    |  __|   | |
-   | |       | |____| |     _| |_
-   |_|       |______|_|    |_____|
-    
+    _______    _______    _______    _______    _______  
+   / _____/   / _____/   / _____/   / _____/   / _____/   
+  / /         / /        / /        / /        / /        
+ / /___      / /___     / /___     / /___     / /___      
+/______/    /______/   /______/   /______/   /______/     
 ` + Reset)
     fmt.Println(Red + `        -/|\    Y-LFI    -/|\` + Reset)
     fmt.Println(White + `           Created by Ahmex000` + Reset)
@@ -102,12 +102,14 @@ misuse or damage caused by this program.` + Reset)
     cookies := flag.String("cookies", "", "Custom cookies (e.g., 'Cookie1=Value1; Cookie2=Value2')")
     timeout := flag.Int("timeout", 10, "Request timeout in seconds")
     skipSSLVerify := flag.Bool("skip-ssl-verify", false, "Skip SSL/TLS certificate verification")
+    flag.BoolVar(&showProgress, "show-progress", true, "Show progress during scanning")
+    flag.BoolVar(&vulnOnly, "vuln-only", false, "Show only vulnerable URLs")
     flag.Parse()
 
     limiter.SetLimit(rate.Limit(*rateLimit)) // Update rate limit from flag
 
     if *payloadFile == "" || (*urlFlag == "" && *endpointFile == "") {
-        fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file] [-o output_file] [-rate requests_per_sec] [-headers 'Header1:Value1,Header2:Value2'] [-cookies 'Cookie1=Value1; Cookie2=Value2'] [-timeout 10] [-skip-ssl-verify]")
+        fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file] [-o output_file] [-rate requests_per_sec] [-headers 'Header1:Value1,Header2:Value2'] [-cookies 'Cookie1=Value1; Cookie2=Value2'] [-timeout 10] [-skip-ssl-verify] [-show-progress] [-vuln-only]")
         os.Exit(1)
     }
 
@@ -172,7 +174,7 @@ misuse or damage caused by this program.` + Reset)
 
     for i := 0; i < *threads; i++ {
         wg.Add(1)
-        go worker(urlChan, payloads, *method, *reqInterval, &requestCount, &countMutex, &wg, *headers, *cookies, *timeout, *skipSSLVerify)
+        go worker(urlChan, payloads, *method, *reqInterval, &requestCount, &countMutex, &wg, *headers, *cookies, *timeout, *skipSSLVerify, len(endpoints), len(payloads))
     }
 
     for _, endpoint := range endpoints {
@@ -191,7 +193,7 @@ misuse or damage caused by this program.` + Reset)
     wg.Wait()
 }
 
-func worker(urlChan <-chan string, payloads []string, method string, reqInterval int, requestCount *int, countMutex *sync.Mutex, wg *sync.WaitGroup, headers string, cookies string, timeout int, skipSSLVerify bool) {
+func worker(urlChan <-chan string, payloads []string, method string, reqInterval int, requestCount *int, countMutex *sync.Mutex, wg *sync.WaitGroup, headers string, cookies string, timeout int, skipSSLVerify bool, totalURLs int, totalPayloads int) {
     defer wg.Done()
 
     testedEndpoints := make(map[string]bool)
@@ -216,7 +218,7 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
             continue
         }
 
-        if performRequestWithRetry(client, req, fullURL) {
+        if performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads) {
             countMutex.Lock()
             *requestCount++
             if *requestCount%reqInterval == 0 {
@@ -225,7 +227,7 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
             countMutex.Unlock()
 
             if method == "POST" {
-                testCookies(fullURL, payloads, client, testedEndpoints)
+                testCookies(fullURL, payloads, client, testedEndpoints, totalURLs, totalPayloads)
             }
         }
     }
@@ -387,7 +389,7 @@ func logResult(message string) {
     }
 }
 
-func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string) bool {
+func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int) bool {
     startTime := time.Now()
     for attempt := 1; attempt <= maxRetries; attempt++ {
         resp, err := client.Do(req)
@@ -485,7 +487,7 @@ func sendNormalRequest(client *http.Client, baseURL string) {
     resp.Body.Close()
 }
 
-func testCookies(fullURL string, payloads []string, client *http.Client, testedEndpoints map[string]bool) {
+func testCookies(fullURL string, payloads []string, client *http.Client, testedEndpoints map[string]bool, totalURLs int, totalPayloads int) {
     parts := strings.SplitN(fullURL, " ", 2)
     if len(parts) < 1 {
         return
@@ -503,7 +505,7 @@ func testCookies(fullURL string, payloads []string, client *http.Client, testedE
         req.Header.Set("Cookie", "test="+payload)
         req.Header.Set("X-Forwarded-For", randomIP())
 
-        if performRequestWithRetry(client, req, fullURL) {
+        if performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads) {
             testedEndpoints[baseURL] = true
         }
     }
