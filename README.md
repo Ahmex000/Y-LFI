@@ -1,12 +1,69 @@
 # Y-LFI
 
-__     __     _      ______ _____
-\ \   / /    | |    |  ____|_   _|
- \ \_/ /_____| |    | |__    | |
-  \   /______| |    |  __|   | |
-   | |       | |____| |     _| |_
-   |_|       |______|_|    |_____|
-
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Y-LFI Banner</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: #f0f0f0;
+        }
+        .banner {
+            width: 600px;
+            height: 200px;
+            background: linear-gradient(to right, #000000, #1C2526);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .lock-icon {
+            position: absolute;
+            left: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 50px;
+            color: #FF0000;
+        }
+        .text-container {
+            text-align: center;
+        }
+        .title {
+            font-family: 'Impact', sans-serif;
+            font-size: 80px;
+            color: #FF0000;
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+            margin: 0;
+            line-height: 80px;
+        }
+        .subtitle {
+            font-family: 'Roboto', sans-serif;
+            font-size: 24px;
+            color: #FFFFFF;
+            margin: 0;
+            line-height: 24px;
+        }
+    </style>
+</head>
+<body>
+    <div class="banner">
+        <span class="lock-icon">🔓</span> <!-- رمز القفل المكسور -->
+        <div class="text-container">
+            <h1 class="title">Y-LFI</h1>
+            <p class="subtitle">Local File Inclusion Scanner</p>
+        </div>
+    </div>
+</body>
+</html>
   
 *Y-LFI - A powerful Local File Inclusion (LFI) vulnerability scanner written in Go.*
 
