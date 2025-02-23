@@ -1,6 +1,7 @@
 # Y-LFI
 
-![image](https://github.com/user-attachments/assets/1e821ef9-7d93-47bb-ac2c-5dd1d9ac31d4)
+![image](https://github.com/user-attachments/assets/f8f26fc0-429c-4c8b-a59f-f3908625982c)
+
 
   
 *Y-LFI - A powerful Local File Inclusion (LFI) vulnerability scanner written in Go.*
