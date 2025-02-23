@@ -1,10 +1,13 @@
-إليك ملف `README.md` كويس ومناسب لمشروعك على GitHub، بيشرح الـ Y-LFI بشكل واضح ومنظم، وبيستخدم اسمك "Ahmex000" زي ما طلبت. الملف مكتوب بصيغة Markdown ومصمم ليكون جذاب وسهل القراءة:
-
----
-
 # Y-LFI
 
-![Y-LFI Banner](https://via.placeholder.com/600x200.png?text=Y-LFI+-+Local+File+Inclusion+Scanner)  
+__     __     _      ______ _____
+\ \   / /    | |    |  ____|_   _|
+ \ \_/ /_____| |    | |__    | |
+  \   /______| |    |  __|   | |
+   | |       | |____| |     _| |_
+   |_|       |______|_|    |_____|
+
+  
 *Y-LFI - A powerful Local File Inclusion (LFI) vulnerability scanner written in Go.*
 
 ---
