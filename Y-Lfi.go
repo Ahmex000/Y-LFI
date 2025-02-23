@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,11 +74,14 @@ var (
 func main() {
 	// Print banner
 	fmt.Println(White + `
-    _______    _______    _______    _______    _______
-   / _____/   / _____/   / _____/   / _____/   / _____/
-  / /         / /        / /        / /        / /
- / /___      / /___     / /___     / /___     / /___
-/______/    /______/   /______/   /______/   /______/
+__     __     _      ______ _____
+\ \   / /    | |    |  ____|_   _|
+ \ \_/ /_____| |    | |__    | |
+  \   /______| |    |  __|   | |
+   | |       | |____| |     _| |_
+   |_|       |______|_|    |_____|
+
+
 ` + Reset)
 	fmt.Println(Red + `        -/|\    Y-LFI    -/|\` + Reset)
 	fmt.Println(White + `           Created by Ahmex000` + Reset)
@@ -103,6 +107,7 @@ misuse or damage caused by this program.` + Reset)
 	cookies := flag.String("cookies", "", "Custom cookies (e.g., 'Cookie1=Value1; Cookie2=Value2')")
 	timeout := flag.Int("timeout", 10, "Request timeout in seconds")
 	skipSSLVerify := flag.Bool("skip-ssl-verify", false, "Skip SSL/TLS certificate verification")
+	reasonsFlag := flag.String("reasons", "indicators", "Reasons to determine vulnerability (e.g., 'indicators,size,similarity')")
 	flag.BoolVar(&showProgress, "show-progress", true, "Show progress during scanning")
 	flag.BoolVar(&vulnOnly, "vuln-only", false, "Show only vulnerable URLs")
 	excludeSizesFlag := flag.String("exclude-sizes", "", "Comma-separated list of response sizes to exclude")
@@ -113,8 +118,14 @@ misuse or damage caused by this program.` + Reset)
 	limiter.SetLimit(rate.Limit(*rateLimit)) // Update rate limit from flag
 
 	if *payloadFile == "" || (*urlFlag == "" && *endpointFile == "") {
-		fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file] [-o output_file] [-rate requests_per_sec] [-headers 'Header1:Value1,Header2:Value2'] [-cookies 'Cookie1=Value1; Cookie2=Value2'] [-timeout 10] [-skip-ssl-verify] [-show-progress] [-vuln-only] [-exclude-sizes 50,100] [-exclude-codes 404,500] [-hide-not-vulnerable]")
+		fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file] [-o output_file] [-rate requests_per_sec] [-headers 'Header1:Value1,Header2:Value2'] [-cookies 'Cookie1=Value1; Cookie2=Value2'] [-timeout 10] [-skip-ssl-verify] [-reasons 'indicators,size,similarity'] [-show-progress] [-vuln-only] [-exclude-sizes 50,100] [-exclude-codes 404,500] [-hide-not-vulnerable]")
 		os.Exit(1)
+	}
+
+	// Parse reasons
+	reasons := strings.Split(*reasonsFlag, ",")
+	for i, reason := range reasons {
+		reasons[i] = strings.TrimSpace(reason)
 	}
 
 	// Parse exclude sizes and codes
@@ -195,7 +206,7 @@ misuse or damage caused by this program.` + Reset)
 
 	for i := 0; i < *threads; i++ {
 		wg.Add(1)
-		go worker(urlChan, payloads, *method, *reqInterval, &requestCount, &countMutex, &wg, *headers, *cookies, *timeout, *skipSSLVerify, totalURLs, totalPayloads)
+		go worker(urlChan, payloads, *method, *reqInterval, &requestCount, &countMutex, &wg, *headers, *cookies, *timeout, *skipSSLVerify, totalURLs, totalPayloads, reasons)
 	}
 
 	for _, endpoint := range endpoints {
@@ -393,18 +404,157 @@ func logResult(message string) {
 
 // LFI indicators to check in responses
 var indicators = []string{
+	// ملفات نظام لينكس/يونكس حساسة
 	"/etc/passwd",
+	"/etc/shadow",
+	"/etc/group",
+	"/etc/hosts",
+	"/etc/resolv.conf",
+	"/etc/fstab",
+	"/etc/motd",
+	"/etc/issue",
+	"/etc/sudoers",
+	"/etc/crontab",
+	"/etc/sysctl.conf",
+	"/etc/ssh/sshd_config",
+	"/etc/ssh/ssh_config",
+
+	// مسارات المستخدمين والـ Root
 	"/root/",
-	"root",
-	"/etc/",
-	"etc/",
-	"/bin",
-	"bin/",
+	"/root/.bashrc",
+	"/root/.ssh/",
+	"/root/.ssh/authorized_keys",
+	"/root/.ssh/id_rsa",
+	"/root/.ssh/known_hosts",
+	"/home/admin/",
+	"/home/www-data/",
+
+	// كلمات نظام شائعة
+	"root:",     // بداية سطر في /etc/passwd أو /etc/shadow
+	"admin:",    // مستخدم شائع
+	"nobody:",   // مستخدم شائع في /etc/passwd
+	"daemon:",   // مستخدم شائع في /etc/passwd
+	"bin:",      // مستخدم شائع في /etc/passwd
+	"sys:",      // مستخدم شائع في /etc/passwd
+	"sync:",     // مستخدم شائع في /etc/passwd
+	"games:",    // مستخدم شائع في /etc/passwd
+	"www-data:", // مستخدم ويب شائع
+
+	// مسارات النظام الأساسية
+	"/bin/",
+	"/bin/bash",
+	"/bin/sh",
+	"/sbin/",
+	"/sbin/init",
+	"/usr/bin/",
+	"/usr/sbin/",
+	"/usr/local/bin/",
+	"/usr/local/sbin/",
+	"/var/",
+	"/var/log/",
+	"/var/www/",
+	"/var/www/html/",
+	"/proc/",
+
+	// ملفات النظام في /proc و /var
+	"/proc/self/environ",
+	"/proc/self/stat",
+	"/proc/self/status",
+	"/proc/self/cmdline",
+	"/proc/cpuinfo",
+	"/proc/meminfo",
+	"/proc/version",
+	"/proc/mounts",
+	"/var/log/auth.log",
+	"/var/log/syslog",
+	"/var/log/messages",
+	"/var/log/apache2/access.log",
+	"/var/log/apache2/error.log",
+	"/var/log/nginx/access.log",
+	"/var/log/nginx/error.log",
+
+	// ملفات كونفيج لتطبيقات الـ Web
+	"/etc/apache2/apache2.conf",
+	"/etc/apache2/httpd.conf",
+	"/etc/apache2/sites-enabled/",
+	"/etc/nginx/nginx.conf",
+	"/etc/php.ini",
+	"/etc/php/php.ini",
+	"/etc/httpd/conf/httpd.conf",
+
+	// Database Credentials وملفات قواعد البيانات
+	"/etc/my.cnf", // MySQL config
+	"/etc/mysql/my.cnf",
+	"/etc/postgresql/pg_hba.conf",
+	"/etc/postgresql/postgresql.conf",
+	"mysql:",          // مستخدم قاعدة بيانات
+	"postgres:",       // مستخدم قاعدة بيانات
+	"dbuser:",         // مستخدم قاعدة بيانات عام
+	"dbname=",         // اسم قاعدة بيانات في كونفيج
+	"password=",       // كلمة مرور في كونفيج
+	"DB_PASSWORD=",    // متغير بيئي شائع
+	"DB_USERNAME=",    // متغير بيئي شائع
+	"DB_HOST=",        // متغير بيئي شائع
+	"mysql_connect(",  // دالة PHP للاتصال بقاعدة بيانات
+	"mysqli_connect(", // دالة PHP للاتصال بقاعدة بيانات
+	"pg_connect(",     // دالة PostgreSQL في PHP
+
+	// مسارات داخلية (Internal Paths)
+	"/var/www/config/",
+	"/var/www/conf/",
+	"/var/www/.env", // ملف بيئي شائع للكونفيج
+	"/app/config/",
+	"/config/",
+	"/conf/",
+	"/internal/",
+	"/private/",
+	"/secret/",
+	"/keys/",
+	"/credentials/",
+	"/data/",
+	"/db/",
+	"/database/",
+
+	// أنماط مميزة في ملفات النظام
+	":/bin/bash",     // نهاية سطر في /etc/passwd
+	":/bin/sh",       // نهاية سطر في /etc/passwd
+	":/sbin/nologin", // نهاية سطر في /etc/passwd
+	":/usr/bin/",     // مسار شائع في /etc/passwd
+	"$6$",            // دليل على Hash في /etc/shadow (SHA-512)
+	"$1$",            // دليل على Hash في /etc/shadow (MD5)
+	"$5$",            // دليل على Hash في /etc/shadow (SHA-256)
+	"127.0.0.1",      // من /etc/hosts
+	"nameserver",     // من /etc/resolv.conf
+	"PATH=",          // متغير بيئي في /proc/self/environ
+	"USER=",          // متغير بيئي في /proc/self/environ
+
+	// مسارات وملفات ويندوز (في حالة سيرفر ويندوز)
+	"C:\\Windows\\",
+	"C:\\Windows\\System32\\",
+	"C:\\WINNT\\",
+	"C:\\WINNT\\system32\\",
+	"C:\\Program Files\\",
+	"C:\\Users\\",
+	"win.ini(.[a-zA-Z0-9]+)?|win.ini[-_?=/\\.]?",
+	"system.ini",
+	"boot.ini",
+	"ntldr",
+	"\\System32\\",
+	"\\Windows\\",
+	"Administrator:", // مستخدم ويندوز شائع
+	"SYSTEM:",        // مستخدم ويندوز شائع
+
+	// كلمات عامة مرتبطة بالنظام
+	"uid=",          // من /proc/self/status أو ملفات مشابهة
+	"gid=",          // من /proc/self/status
+	" pid=",         // من /proc/self/status
+	"kernel",        // من /proc/version
+	"Linux version", // من /proc/version
 }
 
 // performRequestWithRetry performs an HTTP request with retries and exponential backoff
 
-func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int, currentURL int, currentPayload int, headers string, cookies string) (bool, int) {
+func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int, currentURL int, currentPayload int, headers string, cookies string, reasons []string) (bool, int) {
 	startTime := time.Now()
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		resp, err := client.Do(req)
@@ -434,26 +584,25 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 
 			if len(body) == 0 {
 				if !hideNotVulnerable {
-					fmt.Printf("\r%s[-] Not Vulnerable (Empty Response): %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, len(body), Reset)
+					fmt.Printf("\r%s[-] Not Vulnerable: %s | Reason: Empty Response \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, len(body), Reset)
 				}
 				return false, len(body)
 			}
 
 			if contains(excludeCodes, resp.StatusCode) {
 				if !hideNotVulnerable {
-					fmt.Printf("\r%s[-] Not Vulnerable: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, len(body), Reset)
+					fmt.Printf("\r%s[-] Not Vulnerable: %s | Reason: Excluded Status Code %d \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, resp.StatusCode, len(body), Reset)
 				}
 				return false, len(body)
 			}
 
 			if contains(excludeSizes, len(body)) {
 				if !hideNotVulnerable {
-					fmt.Printf("\r%s[-] Not Vulnerable: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, len(body), Reset)
+					fmt.Printf("\r%s[-] Not Vulnerable: %s | Reason: Excluded Size %d \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, len(body), len(body), Reset)
 				}
 				return false, len(body)
 			}
 
-			// Check for redirects (301, 302, etc.)
 			if resp.StatusCode == http.StatusMovedPermanently || // 301
 				resp.StatusCode == http.StatusFound || // 302
 				resp.StatusCode == http.StatusSeeOther || // 303
@@ -461,60 +610,159 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 				resp.StatusCode == http.StatusPermanentRedirect { // 308
 				location := resp.Header.Get("Location")
 				if !hideNotVulnerable {
-					fmt.Printf("\r%s[-] Not Vulnerable (Redirect): %s | Redirected to: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, location, len(body), Reset)
+					fmt.Printf("\r%s[-] Not Vulnerable: %s | Reason: Redirect to %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, location, len(body), Reset)
 				}
 				return false, len(body)
 			}
 
-			// Check for excluded status codes (400, 401, 403, 500)
 			if resp.StatusCode == http.StatusBadRequest || // 400
 				resp.StatusCode == http.StatusUnauthorized || // 401
 				resp.StatusCode == http.StatusForbidden || // 403
 				resp.StatusCode == http.StatusInternalServerError { // 500
 				if !hideNotVulnerable {
-					fmt.Printf("\r%s[-] Not Vulnerable: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, len(body), Reset)
+					fmt.Printf("\r%s[-] Not Vulnerable: %s | Reason: Status Code %d \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, resp.StatusCode, len(body), Reset)
 				}
 				return false, len(body)
 			}
 
-			// If status code is 200
 			if resp.StatusCode == http.StatusOK {
-				// Check for indicators first
-				for _, indicator := range indicators {
-					if strings.Contains(body, indicator) {
-						fmt.Printf("\r%s[+] LFI Detected: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Green, fullURL, len(body), Reset)
-						logResult(fmt.Sprintf("[+] LFI Detected: %s", fullURL))
-						return true, len(body) // Indicator موجود، يبقى مصاب من غير فحص الحجم
+				var reasonsList []string
+				var isVulnerable bool
+
+				// Check Indicators
+				indicatorsFound := false
+				if containsString(reasons, "indicators") {
+					for _, indicator := range indicators {
+						if strings.Contains(body, indicator) {
+							reasonsList = append(reasonsList, fmt.Sprintf("Found: %s", indicator))
+							indicatorsFound = true
+							isVulnerable = true
+						}
 					}
 				}
 
-				// لو مافيش indicators، نقارن الحجم
-				_, sizeWithoutPayload, err := sendRequestWithoutPayload(client, req.Method, fullURL, headers, cookies)
+				// Calculate Payload Size
+				var payloadSize int
+				if req.Method == "GET" {
+					parsedURL, _ := url.Parse(fullURL)
+					query := parsedURL.Query()
+					for _, values := range query {
+						for _, value := range values {
+							payloadSize += len(value)
+						}
+					}
+				} else if req.Method == "POST" {
+					parts := strings.SplitN(fullURL, " ", 2)
+					if len(parts) == 2 {
+						bodyPart := parts[1]
+						payloadSize = len(bodyPart)
+					}
+				}
+
+				// Normalize and Compare Responses
+				normalizedBody := normalizeResponse(body)
+				bodyWithoutPayload, sizeWithoutPayload, statusCodeWithoutPayload, err := sendRequestWithoutPayload(client, req.Method, fullURL, headers, cookies)
 				if err != nil {
 					if !hideNotVulnerable {
 						fmt.Printf("\r%s[-] Failed to fetch baseline response for %s: %v%s\n", Yellow, fullURL, err, Reset)
 					}
 					return false, len(body)
 				}
+				normalizedBodyWithoutPayload := normalizeResponse(bodyWithoutPayload)
 
-				sizeDifference := float64(len(body)-sizeWithoutPayload) / float64(sizeWithoutPayload) * 100
-				// لو الفرق أكبر من 10% (سواء زيادة أو نقصان)
-				if sizeDifference > 10 || sizeDifference < -10 {
-					fmt.Printf("\r%s[+] LFI Detected: %s | Size Diff: %.2f%% \033[34m| Response Size: \033[33m[ %d bytes ]%s\n",
-						Green, fullURL, sizeDifference, len(body), Reset)
-					logResult(fmt.Sprintf("[+] LFI Detected: %s | Size Diff: %.2f%%", fullURL, sizeDifference))
+				// Check Base URL Status Codes
+				switch statusCodeWithoutPayload {
+				case http.StatusMovedPermanently, // 301
+					http.StatusFound,             // 302
+					http.StatusSeeOther,          // 303
+					http.StatusUnauthorized,      // 401
+					http.StatusForbidden,         // 403
+					http.StatusTemporaryRedirect, // 307
+					http.StatusProxyAuthRequired: // 407
+					if !hideNotVulnerable {
+						fmt.Printf("\r%s[-] Not Vulnerable: %s | Reason: Base URL Status %d \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, statusCodeWithoutPayload, len(body), Reset)
+					}
+					return false, len(body)
+				case http.StatusInternalServerError: // 500
+					fmt.Printf("\r%s[!] Alert: Base URL response is 500 (Server Error) for %s%s\n", Yellow, fullURL, Reset)
+					return false, len(body)
+				}
+
+				// Calculate Size Difference
+				adjustedBodySize := len(body) - payloadSize
+				if adjustedBodySize < 0 {
+					adjustedBodySize = 0
+				}
+				sizeDifferencePercent := float64(adjustedBodySize-sizeWithoutPayload) / float64(sizeWithoutPayload) * 100
+				sizeDifferenceAbsolute := adjustedBodySize - sizeWithoutPayload
+
+				if containsString(reasons, "size") {
+					if sizeDifferenceAbsolute > 200 && sizeDifferencePercent > 25 {
+						reasonsList = append(reasonsList, fmt.Sprintf("Size Diff: %.2f%%", sizeDifferencePercent))
+						isVulnerable = true
+					} else if sizeDifferencePercent > 50 {
+						reasonsList = append(reasonsList, fmt.Sprintf("Size Diff: %.2f%%", sizeDifferencePercent))
+						isVulnerable = true
+					}
+				}
+
+				// Calculate Similarity
+				similarity := calculateSimilarity(normalizedBody, normalizedBodyWithoutPayload)
+				if containsString(reasons, "similarity") && similarity <= 90 {
+					reasonsList = append(reasonsList, fmt.Sprintf("Similarity: %.2f%%", similarity))
+					isVulnerable = true
+				}
+
+				// Select Top 2 Reasons
+				var topReasons string
+				if len(reasonsList) > 0 {
+					if len(reasonsList) == 1 {
+						topReasons = reasonsList[0]
+					} else {
+						// Priority: Indicators > Size > Similarity
+						sortedReasons := []string{}
+						for _, r := range reasonsList {
+							if strings.HasPrefix(r, "Found:") {
+								sortedReasons = append([]string{r}, sortedReasons...) // Indicators first
+							} else if strings.HasPrefix(r, "Size Diff:") {
+								if len(sortedReasons) == 0 || !strings.HasPrefix(sortedReasons[0], "Found:") {
+									sortedReasons = append([]string{r}, sortedReasons...) // Size second
+								} else {
+									sortedReasons = append(sortedReasons, r)
+								}
+							} else if strings.HasPrefix(r, "Similarity:") {
+								sortedReasons = append(sortedReasons, r) // Similarity last
+							}
+						}
+						if len(sortedReasons) > 2 {
+							sortedReasons = sortedReasons[:2] // Take top 2
+						}
+						topReasons = strings.Join(sortedReasons, " | ")
+					}
+				} else {
+					topReasons = fmt.Sprintf("Similarity: %.2f%%", similarity)
+				}
+
+				// Output Result with indicatorsFound usage
+				if isVulnerable {
+					if indicatorsFound {
+						fmt.Printf("\r%s[+] LFI Detected (Indicators Found): %s | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Green, fullURL, topReasons, len(body), Reset)
+						logResult(fmt.Sprintf("[+] LFI Detected (Indicators Found): %s | Reason: %s", fullURL, topReasons))
+					} else {
+						fmt.Printf("\r%s[+] LFI Detected: %s | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Green, fullURL, topReasons, len(body), Reset)
+						logResult(fmt.Sprintf("[+] LFI Detected: %s | Reason: %s", fullURL, topReasons))
+					}
 					return true, len(body)
+				} else {
+					if !hideNotVulnerable {
+						fmt.Printf("\r%s[-] Not Vulnerable: %s | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, topReasons, len(body), Reset)
+					}
+					return false, len(body)
 				}
-
-				// لو مافيش فرق كافي في الحجم
-				if !hideNotVulnerable {
-					fmt.Printf("\r%s[-] Not Vulnerable: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, len(body), Reset)
-				}
-				return false, len(body)
 			}
 
 			if !hideNotVulnerable {
-				fmt.Printf("\r%s[-] Not Vulnerable: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, len(body), Reset)
+				fmt.Printf("\r%s[-] Not Vulnerable: %s | Reason: Status Code %d \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Red, fullURL, resp.StatusCode, len(body), Reset)
 			}
 			return false, len(body)
 		}
@@ -528,19 +776,74 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 	}
 	logResult(fmt.Sprintf("[-] Failed after %d attempts for %s", maxRetries, fullURL))
 	if !hideNotVulnerable {
-		fmt.Printf("\r%s[-] Failed after %d attempts for %s \033[34m| Response Size: \033[33m[ 0 bytes ]%s\n", Red, maxRetries, fullURL, Reset)
+		fmt.Printf("\r%s[-] Failed after %d attempts for %s | Reason: Max Retries Exceeded \033[34m| Response Size: \033[33m[ 0 bytes ]%s\n", Red, maxRetries, fullURL, Reset)
 	}
 	return false, 0
 }
 
-// sendRequestWithoutPayload sends a request without any payload
-func sendRequestWithoutPayload(client *http.Client, method, fullURL string, headers string, cookies string) (string, int, error) {
-	req, err := http.NewRequest(method, fullURL, nil)
-	if err != nil {
-		return "", 0, err
+// دالة مساعدة للتحقق من وجود String في Slice
+func containsString(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+func calculateSimilarity(str1, str2 string) float64 {
+	if str1 == str2 {
+		return 100.0
+	}
+	if len(str1) == 0 || len(str2) == 0 {
+		return 0.0
 	}
 
-	// إضافة نفس الـ Headers مثل الطلب الأصلي
+	// لو str1 أطول، يبقى str2 هو الأساس (والعكس)
+	shorter := str1
+	longer := str2
+	if len(str1) > len(str2) {
+		shorter = str2
+		longer = str1
+	}
+
+	// لو الفرق في الطول كبير جدًا (مثلاً أكتر من 200 بايت)، التشابه بيقل
+	lengthDiff := len(longer) - len(shorter)
+	if lengthDiff > 200 { // زيادة كبيرة زي /etc/passwd
+		return float64(len(shorter)) / float64(len(longer)) * 100 * 0.5 // تقليل التشابه لو في زيادة كبيرة
+	}
+
+	// حساب التشابه بناءً على الأجزاء المشتركة
+	common := 0
+	for i := 0; i < len(shorter); i++ {
+		if i < len(longer) && shorter[i] == longer[i] {
+			common++
+		}
+	}
+
+	// لو في زيادة، بنحسب نسبة الجزء المشترك من الأقصر
+	similarity := float64(common) / float64(len(shorter)) * 100
+	if len(longer) > len(shorter) {
+		// لو زاد جزء، بنقلل التشابه بناءً على الفرق
+		similarity = similarity * float64(len(shorter)) / float64(len(longer))
+	}
+
+	return similarity
+}
+
+// sendRequestWithoutPayload sends a request without any payload
+func sendRequestWithoutPayload(client *http.Client, method, fullURL string, headers string, cookies string) (string, int, int, error) {
+	parsedURL, err := url.Parse(fullURL)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	baseURL := parsedURL.Scheme + "://" + parsedURL.Host + parsedURL.Path
+
+	req, err := http.NewRequest(method, baseURL, nil)
+	if err != nil {
+		return "", 0, 0, err
+	}
+
 	if headers != "" {
 		headerPairs := strings.Split(headers, ",")
 		for _, pair := range headerPairs {
@@ -555,35 +858,45 @@ func sendRequestWithoutPayload(client *http.Client, method, fullURL string, head
 		req.Header.Set("Cookie", cookies)
 	}
 
-	// نفس User-Agent والـ Headers الأصلية
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Pragma", "no-cache")
 	req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("X-Forwarded-For", randomIP())
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 
-	return string(bodyBytes), len(bodyBytes), nil
+	return string(bodyBytes), len(bodyBytes), resp.StatusCode, nil
 }
 
 // normalizeResponse removes dynamic content (like dates and times) from the response
+
 func normalizeResponse(body string) string {
-	// تجاهل المحتوى الديناميكي (مثل التواريخ والأوقات)
-	body = strings.ReplaceAll(body, "\n", "") // تجاهل الأسطر الجديدة
-	body = strings.ReplaceAll(body, "\r", "") // تجاهل الأحرف الخاصة
-	body = strings.ReplaceAll(body, " ", "")  // تجاهل المسافات
+	body = strings.ReplaceAll(body, "\n", "")
+	body = strings.ReplaceAll(body, "\r", "")
+	body = strings.ReplaceAll(body, " ", "")
+	// تنظيف التواريخ والأوقات
+	re := regexp.MustCompile(`\d{4}-\d{2}-\d{2}|\d{2}:\d{2}:\d{2}`)
+	body = re.ReplaceAllString(body, "")
+	// تنظيف معرفات الجلسات أو الأرقام العشوائية
+	reSession := regexp.MustCompile(`[a-fA-F0-9]{32,64}`)
+	body = reSession.ReplaceAllString(body, "")
+	// تنظيف أرقام عشوائية طويلة (مثل CSRF tokens)
+	reRandom := regexp.MustCompile(`\d{10,}`)
+	body = reRandom.ReplaceAllString(body, "")
 	return body
 }
 
-func worker(urlChan <-chan string, payloads []string, method string, reqInterval int, requestCount *int, countMutex *sync.Mutex, wg *sync.WaitGroup, headers string, cookies string, timeout int, skipSSLVerify bool, totalURLs int, totalPayloads int) {
+func worker(urlChan <-chan string, payloads []string, method string, reqInterval int, requestCount *int, countMutex *sync.Mutex, wg *sync.WaitGroup, headers string, cookies string, timeout int, skipSSLVerify bool, totalURLs int, totalPayloads int, reasons []string) {
 	defer wg.Done()
 
 	testedEndpoints := make(map[string]bool)
@@ -608,31 +921,29 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
 			continue
 		}
 
-		isVulnerable, responseSize := performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads), headers, cookies)
+		// تمرير reasons لـ performRequestWithRetry
+		isVulnerable, responseSize := performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads), headers, cookies, reasons)
 		if isVulnerable {
 			successfulMutex.Lock()
 			successfulPayloads++
 			successfulMutex.Unlock()
 		}
 
-		// Update progress زي ffuf بدون الـ Size
 		if showProgress {
 			countMutex.Lock()
 			currentRequest := *requestCount + 1
-			currentURL := (currentRequest-1)/totalPayloads + 1     // رقم الـ URL الحالي
-			currentPayload := (currentRequest-1)%totalPayloads + 1 // رقم الـ payload الحالي
+			currentURL := (currentRequest-1)/totalPayloads + 1
+			currentPayload := (currentRequest-1)%totalPayloads + 1
 			countMutex.Unlock()
 
-			fmt.Printf("\rURLs: %d/%d | Payloads: %d/%d | Found: %d Respose Size: %d",
+			fmt.Printf("\rURLs: %d/%d | Payloads: %d/%d | Found: %d Response Size: %d",
 				currentURL, totalURLs, currentPayload, totalPayloads, successfulPayloads, responseSize)
 		}
 
-		// زيادة requestCount مع كل طلب
 		countMutex.Lock()
 		*requestCount++
 		countMutex.Unlock()
 
-		// إرسال طلب عادي بعد كل reqInterval طلبات
 		if *requestCount%reqInterval == 0 {
 			sendNormalRequest(client, baseEndpoint)
 		}
@@ -656,7 +967,7 @@ func sendNormalRequest(client *http.Client, baseURL string) {
 }
 
 // testCookies tests cookies with different payloads
-func testCookies(fullURL string, payloads []string, client *http.Client, testedEndpoints map[string]bool, totalURLs int, totalPayloads int) {
+func testCookies(fullURL string, payloads []string, client *http.Client, testedEndpoints map[string]bool, totalURLs int, totalPayloads int, reasons []string) {
 	parts := strings.SplitN(fullURL, " ", 2)
 	if len(parts) < 1 {
 		return
@@ -674,7 +985,8 @@ func testCookies(fullURL string, payloads []string, client *http.Client, testedE
 		req.Header.Set("Cookie", "test="+payload)
 		req.Header.Set("X-Forwarded-For", randomIP())
 
-		isVulnerable, _ := performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, 0, 0, "", "")
+		// تمرير reasons لـ performRequestWithRetry
+		isVulnerable, _ := performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, 0, 0, "", "", reasons)
 		if isVulnerable {
 			testedEndpoints[baseURL] = true
 		}
