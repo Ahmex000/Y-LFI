@@ -1,0 +1,6 @@
+payloads: "payloads.txt"
+url: "http://example.com"
+threads: 20
+method: "GET"
+reasons: "indicators,size"
+timeout: 15
