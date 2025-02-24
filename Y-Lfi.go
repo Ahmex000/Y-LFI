@@ -802,7 +802,7 @@ func sendNormalRequest(client *http.Client, baseURL string) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Printf("%s[-] Error sending normal request to %s: %v%s\n", Red, cleanURL, err, Reset)
+		// fmt.Printf("%s[-] Error sending normal request to %s: %v%s\n", Red, cleanURL, err, Reset)
 		return
 	}
 	defer resp.Body.Close()
