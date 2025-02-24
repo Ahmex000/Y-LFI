@@ -434,7 +434,6 @@ func containsString(slice []string, item string) bool {
 }
 
 // performRequestWithRetry performs an HTTP request with retries and exponential backoff
-
 func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int, currentURL int, currentPayload int, headers string, cookies string, reasons []string) (bool, int) {
 	startTime := time.Now()
 	for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -486,13 +485,10 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 				}
 
 				// Step 2: Baseline Check (الطلب التاني بدون payload)
-				bodyWithoutPayload, sizeWithoutPayload, statusCodeWithoutPayload, err := sendRequestWithoutPayload(client, req.Method, fullURL, headers, cookies)
+				_, sizeWithoutPayload, statusCodeWithoutPayload, err := sendRequestWithoutPayload(client, req.Method, fullURL, headers, cookies)
 				if err != nil || statusCodeWithoutPayload != http.StatusOK {
 					return false, responseSize
 				}
-
-				normalizedBody := normalizeResponse(body)
-				normalizedBodyWithoutPayload := normalizeResponse(bodyWithoutPayload)
 
 				payloadSize := 0
 				if req.Method == "GET" {
@@ -517,7 +513,17 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 				}
 				sizeDifferencePercent := float64(adjustedBodySize-sizeWithoutPayload) / float64(sizeWithoutPayload) * 100
 				sizeDifferenceAbsolute := adjustedBodySize - sizeWithoutPayload
-				similarity := calculateSimilarity(normalizedBody, normalizedBodyWithoutPayload)
+
+				// Step 3: Sanity Check (الطلب التالت مع payload وهمي)
+				dummyURL := buildURLWithParam(fullURL, "dummy", "test0123")
+				_, dummySize, dummyStatusCode, err := sendRequestWithoutPayload(client, req.Method, dummyURL, headers, cookies)
+				if err != nil || dummyStatusCode != http.StatusOK {
+					return false, responseSize
+				}
+
+				// حذف sizeDiffRequest1vs3Percent لأنه مش مستخدم
+				// sizeDiffRequest1vs3 := abs(responseSize - dummySize)
+				// sizeDiffRequest1vs3Percent := (float64(sizeDiffRequest1vs3) / float64(responseSize)) * 100
 
 				if containsString(reasons, "size") {
 					if sizeDifferenceAbsolute > 200 && sizeDifferencePercent > 25 {
@@ -529,53 +535,24 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 					}
 				}
 
-				if containsString(reasons, "similarity") && similarity <= 90 {
-					reasonsList = append(reasonsList, fmt.Sprintf("Similarity: %.2f%%", similarity))
-					isVulnerable = true
+				if isVulnerable {
+					// إذا تم اكتشاف الثغرة بناءً على الحجم، نطبع أحجام الطلبات الثلاثة
+					topReasons := strings.Join(reasonsList, " | ")
+					fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]%s\n", Green, fullURL, topReasons, responseSize, sizeWithoutPayload, dummySize, Reset)
+					logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s | Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]", fullURL, topReasons, responseSize, sizeWithoutPayload, dummySize))
+					return true, responseSize
 				}
 
-				if !isVulnerable {
-					// Step 3: Sanity Check (الطلب التالت مع payload وهمي)
-					dummyURL := buildURLWithParam(fullURL, "dummy", "test0123")
-					_, dummySize, dummyStatusCode, err := sendRequestWithoutPayload(client, req.Method, dummyURL, headers, cookies)
-					if err != nil || dummyStatusCode != http.StatusOK {
-						return false, responseSize
-					}
+				// Step 4: التحقق الإضافي لحجم الطلبات
+				sizeDiffBaselineVsDummy := abs(sizeWithoutPayload - dummySize)
+				sizeDiffBaselineVsDummyPercent := float64(sizeDiffBaselineVsDummy) / float64(sizeWithoutPayload) * 100
+				sizeDiffWithBaseline := abs(responseSize - sizeWithoutPayload)
+				sizeDiffWithDummyNew := abs(responseSize - dummySize)
 
-					sizeDiffRequest1vs3 := abs(responseSize - dummySize)
-					sizeDiffRequest1vs3Percent := (float64(sizeDiffRequest1vs3) / float64(responseSize)) * 100
-
-					if sizeDiffRequest1vs3Percent < 10 {
-						return false, responseSize
-					}
-					fmt.Printf("\r%s[+] LFI Possible: %s | Diff: %.2f%% (%d bytes)%s\n",
-						Green, fullURL, sizeDiffRequest1vs3Percent, sizeDiffRequest1vs3, Reset)
-					return true, responseSize
-
-					// Step 4: التحقق الجديد مع تقليل الفرق
-					// شرط 1: لو حجم الطلب التاني قريب جدًا من حجم الطلب التالت
-					sizeDiffBaselineVsDummy := abs(sizeWithoutPayload - dummySize)
-					sizeDiffBaselineVsDummyPercent := float64(sizeDiffBaselineVsDummy) / float64(sizeWithoutPayload) * 100
-					// شرط 2: فرق كبير بين الطلب الأول و(التاني أو التالت) - قيمة أقل (200 بدل 500)
-					sizeDiffWithBaseline := abs(responseSize - sizeWithoutPayload)
-					sizeDiffWithDummyNew := abs(responseSize - dummySize)
-
-					if sizeDiffBaselineVsDummyPercent < 10 && (sizeDiffWithBaseline > 200 || sizeDiffWithDummyNew > 200) {
-						reasonsList = append(reasonsList, fmt.Sprintf("Baseline vs Dummy Size Diff: %.2f%% | Large Diff with Original: %d/%d bytes", sizeDiffBaselineVsDummyPercent, sizeDiffWithBaseline, sizeDiffWithDummyNew))
-						isVulnerable = true
-					}
-
-					if isVulnerable {
-						topReasons := strings.Join(reasonsList, " | ")
-						fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Green, fullURL, topReasons, responseSize, Reset)
-						logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s", fullURL, topReasons))
-						return true, responseSize
-					}
-				} else {
-					// لو اتكشفت ثغرة من الـ size أو similarity، نطبع النتيجة
-					topReasons := strings.Join(reasonsList, " | ")
-					fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Green, fullURL, topReasons, responseSize, Reset)
-					logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s", fullURL, topReasons))
+				if sizeDiffBaselineVsDummyPercent < 10 && (sizeDiffWithBaseline > 200 || sizeDiffWithDummyNew > 200) {
+					reasonsList = append(reasonsList, fmt.Sprintf("Baseline vs Dummy Size Diff: %.2f%% | Large Diff with Original: %d/%d bytes", sizeDiffBaselineVsDummyPercent, sizeDiffWithBaseline, sizeDiffWithDummyNew))
+					fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]%s\n", Green, fullURL, strings.Join(reasonsList, " | "), responseSize, sizeWithoutPayload, dummySize, Reset)
+					logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s | Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]", fullURL, strings.Join(reasonsList, " | "), responseSize, sizeWithoutPayload, dummySize))
 					return true, responseSize
 				}
 
@@ -649,46 +626,6 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
 			sendNormalRequest(client, baseEndpoint)
 		}
 	}
-}
-
-func calculateSimilarity(str1, str2 string) float64 {
-	if str1 == str2 {
-		return 100.0
-	}
-	if len(str1) == 0 || len(str2) == 0 {
-		return 0.0
-	}
-
-	// لو str1 أطول، يبقى str2 هو الأساس (والعكس)
-	shorter := str1
-	longer := str2
-	if len(str1) > len(str2) {
-		shorter = str2
-		longer = str1
-	}
-
-	// لو الفرق في الطول كبير جدًا (مثلاً أكتر من 200 بايت)، التشابه بيقل
-	lengthDiff := len(longer) - len(shorter)
-	if lengthDiff > 200 { // زيادة كبيرة زي /etc/passwd
-		return float64(len(shorter)) / float64(len(longer)) * 100 * 0.5 // تقليل التشابه لو في زيادة كبيرة
-	}
-
-	// حساب التشابه بناءً على الأجزاء المشتركة
-	common := 0
-	for i := 0; i < len(shorter); i++ {
-		if i < len(longer) && shorter[i] == longer[i] {
-			common++
-		}
-	}
-
-	// لو في زيادة، بنحسب نسبة الجزء المشترك من الأقصر
-	similarity := float64(common) / float64(len(shorter)) * 100
-	if len(longer) > len(shorter) {
-		// لو زاد جزء، بنقلل التشابه بناءً على الفرق
-		similarity = similarity * float64(len(shorter)) / float64(len(longer))
-	}
-
-	return similarity
 }
 
 // sendRequestWithoutPayload sends a request without any payload
