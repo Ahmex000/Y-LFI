@@ -3,156 +3,123 @@
 ![image](https://github.com/user-attachments/assets/a13d887a-9331-4d80-bb13-19c11dd3eba7)
 
 
+**Y-LFI** is a Local File Inclusion (LFI) vulnerability scanner written in Go. It is designed to test web applications for LFI vulnerabilities by injecting payloads into URL parameters and analyzing server responses for indicators of successful exploitation. The tool supports concurrent scanning, proxy usage, custom headers, and multiple detection methods.
 
-
-  
-*Y-LFI - A powerful Local File Inclusion (LFI) vulnerability scanner written in Go.*
-
----
-
-## Overview
-
-Y-LFI is an advanced tool designed to detect Local File Inclusion (LFI) vulnerabilities in web applications. Built with Go by **Ahmex000**, it offers multi-threaded scanning, proxy support, customizable payloads, and flexible detection mechanisms. Whether you're a security researcher or a penetration tester, Y-LFI provides a robust solution for identifying LFI flaws efficiently.
-
----
+**Created by Ahmex000**
 
 ## Features
+- **Multi-threaded Scanning**: Supports concurrent requests with configurable threads (`-t`).
+- **Flexible Input**: Accepts a single URL (`-u`) or a file containing multiple endpoints (`-f`).
+- **Payload Injection**: Uses a customizable payload file (`-p`) to test various LFI vectors.
+- **Detection Methods**: Supports multiple vulnerability detection reasons (`indicators`, `size`, `similarity`).
+- **Rate Limiting**: Controls request rate with a configurable limit (`-rate`).
+- **Proxy Support**: Works with single proxies (`-proxy`) or a proxy list (`-proxyfile`).
+- **Custom Headers and Cookies**: Allows adding custom headers (`-headers`) and cookies (`-cookies`).
+- **Output Logging**: Saves results to a file (`-o`).
+- **Progress Tracking**: Displays real-time scanning progress (`-show-progress`).
+- **Filtering Options**: Excludes specific response sizes (`-exclude-sizes`) or status codes (`-exclude-codes`).
+- **Behavioral Control**: Options to hide non-vulnerable endpoints (`-hide-not-vulnerable`) or stop scanning a URL after a vulnerability is found (`-stop-on-vuln`).
 
-- **Multi-Threaded Scanning**: Speed up your scans with configurable concurrent threads.
-- **Flexible Payloads**: Use custom payload files for GET or POST requests.
-- **Proxy Support**: Scan through a single proxy or a list of proxies with validation.
-- **Custom Headers & Cookies**: Add your own headers and cookies for advanced testing.
-- **Detection Customization**: Choose detection methods (`indicators`, `size`, `similarity`) with a default of `indicators`.
-- **Rate Limiting**: Control request rates to avoid detection or server overload.
-- **Progress Tracking**: Real-time progress display with successful payload count.
-- **Output Logging**: Save results to a file for later analysis.
-- **SSL/TLS Flexibility**: Option to skip certificate verification for testing.
+## Stages of Operation
+1. **Input Parsing**:
+   - Reads payloads from the specified file (`-p`).
+   - Accepts either a single URL (`-u`) or a list of endpoints from a file (`-f`).
+   - Validates proxies if provided.
 
----
+2. **Request Generation**:
+   - Constructs URLs by combining endpoints with payloads.
+   - Applies custom headers, cookies, and randomized realistic headers for stealth.
+
+3. **Concurrent Scanning**:
+   - Launches multiple worker threads (controlled by `-t`) to send HTTP requests.
+   - Uses a rate limiter (controlled by `-rate`) to avoid overwhelming the target.
+
+4. **Response Analysis**:
+   - Checks for LFI indicators (e.g., `/etc/passwd`, `root:`) in the response body.
+   - Analyzes response size differences (`size`) and similarity with baseline requests (`similarity`).
+   - Logs successful detections and optionally stops per URL if `-stop-on-vuln` is enabled.
+
+5. **Output**:
+   - Prints vulnerable URLs to the console with details (e.g., reason, response size).
+   - Saves results to an output file if specified (`-o`).
+   - Displays a summary of successful payloads found.
 
 ## Installation
-
-### Prerequisites
-- [Go](https://golang.org/dl/) (version 1.16 or higher)
-- Git
-
-### Steps
-1. Clone the repository:
+1. Ensure you have [Go](https://golang.org/doc/install) installed (version 1.16 or higher recommended).
+2. Clone the repository:
    ```bash
-   git clone https://github.com/Ahmex000/Y-LFI.git
+   git clone https://github.com/ahmex000/Y-LFI.git
    cd Y-LFI
    ```
-2. Install dependencies:
+3. Install dependencies:
    ```bash
-   go mod init Y-LFI
+   go get github.com/gocolly/colly/v2
    go get golang.org/x/time/rate
    ```
-3. Build the tool:
+4. Run the tool:
    ```bash
-   go build YLfi.go
+   go run Y-Lfi.go [options]
    ```
-4. Run it:
-   ```bash
-   ./YLfi -h
-   ```
-
----
 
 ## Usage
-
-Y-LFI supports a variety of command-line flags to customize your scans. Here's the basic syntax:
-
-```bash
-go run YLfi.go -p <payloads_file> [-u <url> | -f <endpoints_file>] [options]
+```
+go run Y-Lfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file] [-o output_file] [-rate requests_per_sec] [-headers 'Header1:Value1,Header2:Value2'] [-cookies 'Cookie1=Value1;Cookie2=Value2'] [-timeout seconds] [-skip-ssl-verify] [-reasons 'indicators,size,similarity'] [-show-progress] [-vuln-only] [-exclude-sizes sizes] [-exclude-codes codes] [-hide-not-vulnerable] [-stop-on-vuln]
 ```
 
-### Required Flags
-- `-p <file>`: Path to the payload file (e.g., `payloads.txt`).
-- `-u <url>`: Single URL to scan (for GET) or request file (for POST).
-- `-f <file>`: File containing multiple endpoints to scan.
+### Important Notes
+- **Single URL vs. File**: The tool performs more consistently with a single URL (`-u`) compared to a file of endpoints (`-f`). Using `-u` ensures all payloads are tested against a single target without potential issues in file parsing or channel management.
+- **Legal Disclaimer**: Usage of Y-LFI against targets without prior consent is illegal. Use responsibly and only on systems you have permission to test.
 
-### Optional Flags
-| Flag                   | Description                                      | Default            |
-|-----------------------|--------------------------------------------------|--------------------|
-| `-t <int>`            | Number of concurrent threads                    | 10                |
-| `-m <GET|POST>`       | HTTP method                                     | GET               |
-| `-r <int>`            | Send a normal request after this many requests  | 10                |
-| `-proxy <url>`        | Single proxy URL (e.g., `http://proxy:8080`)    | None              |
-| `-proxyfile <file>`   | File with proxy list                            | None              |
-| `-o <file>`           | Output file for results                         | None              |
-| `-rate <int>`         | Max requests per second                         | 5                 |
-| `-headers <string>`   | Custom headers (e.g., `Header1:Value1,Header2:Value2`) | None       |
-| `-cookies <string>`   | Custom cookies (e.g., `Cookie1=Value1;Cookie2=Value2`) | None       |
-| `-timeout <int>`      | Request timeout in seconds                      | 10                |
-| `-skip-ssl-verify`    | Skip SSL/TLS certificate verification           | False             |
-| `-reasons <string>`   | Detection methods (e.g., `indicators,size`)     | `indicators`      |
-| `-show-progress`      | Show scanning progress                          | True              |
-| `-vuln-only`          | Show only vulnerable URLs                       | False             |
-| `-exclude-sizes <list>` | Comma-separated sizes to exclude (e.g., `50,100`) | None           |
-| `-exclude-codes <list>` | Comma-separated status codes to exclude (e.g., `404,500`) | None   |
-| `-hide-not-vulnerable`| Hide non-vulnerable endpoints                   | False             |
+### Preferred Command
+For optimal performance and reliability, especially when testing a single endpoint, use:
+```bash
+go run Y-Lfi.go -u http://example.com/?file= -p payloads.txt -hide-not-vulnerable -stop-on-vuln -rate 100 -t 20 -reasons indicators,size,similarity
+```
+This command focuses on a single URL, stops scanning a URL after detecting a vulnerability, and uses a high request rate with multiple threads for efficiency.
 
-### Examples
-1. **Scan a single URL with default settings:**
-   ```bash
-   go run YLfi.go -p payloads.txt -u "http://example.com?page="
-   ```
-2. **Scan multiple endpoints with custom threads and output:**
-   ```bash
-   go run YLfi.go -p payloads.txt -f endpoints.txt -t 20 -o results.txt
-   ```
-3. **POST request with proxies and custom headers:**
-   ```bash
-   go run YLfi.go -p payloads.txt -u request.txt -m POST -proxyfile proxies.txt -headers "X-Test:Value" -reasons "indicators,size"
-   ```
-4. **Silent mode with only vulnerable results:**
-   ```bash
-   go run YLfi.go -p payloads.txt -u "http://example.com" -vuln-only -hide-not-vulnerable
-   ```
+### Using a File as a Single URL
+If you have a file (e.g., `urls.txt`) with one URL per line and want to treat it as a single input, you can use `cat` with `-u`:
+```bash
+go run Y-Lfi.go -u "$(cat urls.txt)" -p payloads.txt -hide-not-vulnerable -stop-on-vuln -rate 100 -t 20 -reasons indicators,size,similarity
+```
+**Note**: This works best if `urls.txt` contains a single URL. If it has multiple URLs, only the last one will be used due to how shell substitution works. For multiple URLs, stick to `-f`.
 
----
+### Example with File Input
+For scanning multiple endpoints from a file:
+```bash
+go run Y-Lfi.go -f urls.txt -p payloads.txt -hide-not-vulnerable -stop-on-vuln -rate 100 -t 20 -reasons indicators,size,similarity
+```
+**Preferred Command for File Input** (if you must use a file):
+```bash
+go run Y-Lfi.go -f urls.txt -p payloads.txt -hide-not-vulnerable -stop-on-vuln -rate 100 -t 20 -reasons indicators,size,similarity
+```
+However, expect potentially less consistent results compared to `-u` due to threading and file handling overhead.
 
-## Detection Methods
-Y-LFI uses three methods to identify LFI vulnerabilities:
-- **Indicators**: Checks for sensitive file patterns (e.g., `/etc/passwd`, `win.ini`) in responses. *(Default)*
-- **Size**: Compares response size differences with and without payloads.
-- **Similarity**: Analyzes response similarity to detect anomalies.
+## Example Files
+### `payloads.txt`
+```
+/etc/passwd
+/etc/shadow
+../../etc/passwd
+/etc/apache2/apache2.conf
+```
 
-Use the `-reasons` flag to specify which methods to use (e.g., `-reasons "indicators,size"`).
+### `urls.txt`
+```
+http://173.212.240.12:5000/?file=
+http://example.com/?page=
+```
 
----
-
-## Payload File Format
-- For GET: One payload per line (e.g., `../../etc/passwd`).
-- For POST: Full request body per line (e.g., `http://example.com data=../../etc/passwd`).
-
----
-
-## Legal Disclaimer
-**Y-LFI is intended for authorized security testing only.** Usage against targets without prior consent is illegal. The developer (Ahmex000) assumes no liability for misuse or damage caused by this tool. Always comply with local, state, and federal laws.
-
----
+## Troubleshooting
+- **Inconsistent Results**: Use `-u` for a single URL to avoid issues with file parsing or channel management.
+- **No Requests Sent**: Check if `payloads.txt` and `urls.txt` are non-empty and correctly formatted.
+- **Rate Limiting**: Increase `-rate` if the target can handle more requests, or decrease it if you're hitting server limits.
 
 ## Contributing
-Contributions are welcome! Feel free to:
-1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature-name`).
-3. Commit your changes (`git commit -m "Add feature"`).
-4. Push to the branch (`git push origin feature-name`).
-5. Open a Pull Request.
-
----
+Feel free to submit pull requests or open issues for bug reports and feature suggestions!
 
 ## License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
----
-
-## Contact
-- **Author**: Ahmex000
-- **GitHub**: [github.com/Ahmex000](https://github.com/Ahmex000)
-- **Issues**: [Report a bug or request a feature](https://github.com/Ahmex000/Y-LFI/issues)
-
----
-
-*Happy Hacking Responsibly!*
+**Disclaimer**: The developers are not responsible for any misuse or damage caused by this tool.
+```
