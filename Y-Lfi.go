@@ -7,7 +7,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -18,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gocolly/colly/v2"
 	"golang.org/x/time/rate"
 )
 
@@ -52,6 +52,49 @@ var (
 	successfulMutex    sync.Mutex
 	stopOnVuln         bool // New flag
 )
+
+var acceptOptions = []string{
+	"text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+	"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.7",
+	"application/json, text/javascript, */*; q=0.01",
+	"*/*",
+}
+
+var acceptLanguageOptions = []string{
+	"en-US,en;q=0.9",
+	"en-GB,en;q=0.8",
+	"fr-FR,fr;q=0.9",
+	"de-DE,de;q=0.8",
+	"es-ES,es;q=0.7",
+	"zh-CN,zh;q=0.9",
+	"ja-JP,ja;q=0.8",
+}
+
+var acceptEncodingOptions = []string{
+	"gzip, deflate, br",
+	"gzip, deflate",
+	"br",
+	"", // أحيانًا مفيش Accept-Encoding
+}
+
+var connectionOptions = []string{
+	"keep-alive",
+	"close",
+}
+
+var cacheControlOptions = []string{
+	"no-cache",
+	"no-store",
+	"max-age=0",
+	"", // أحيانًا مفيش Cache-Control
+}
+
+var refererOptions = []string{
+	"https://www.google.com/",
+	"https://www.bing.com/",
+	"https://www.facebook.com/",
+	"", // أحيانًا مفيش Referer
+}
 
 var userAgents = []string{
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -402,15 +445,28 @@ func buildRequest(method, fullURL string, payloads []string, headers string, coo
 		req.Header.Set("Cookie", cookies)
 	}
 
-	// Add realistic headers with random IPs
+	// Add randomized realistic headers
 	req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Accept", acceptOptions[rand.Intn(len(acceptOptions))])
+	req.Header.Set("Accept-Language", acceptLanguageOptions[rand.Intn(len(acceptLanguageOptions))])
+	req.Header.Set("Accept-Encoding", acceptEncodingOptions[rand.Intn(len(acceptEncodingOptions))])
+	req.Header.Set("Connection", connectionOptions[rand.Intn(len(connectionOptions))])
+	req.Header.Set("Cache-Control", cacheControlOptions[rand.Intn(len(cacheControlOptions))])
+	req.Header.Set("Referer", refererOptions[rand.Intn(len(refererOptions))])
 	req.Header.Set("X-Forwarded-For", randomIP())
 	req.Header.Set("Forwarded", "for="+randomIP())
-	req.Header.Set("X-Real-IP", randomIP())
+
+	// Simulate browser behavior with additional headers (optional)
+	if rand.Intn(2) == 0 { // 50% chance
+		req.Header.Set("DNT", "1") // Do Not Track
+	}
+	if rand.Intn(3) == 0 { // 33% chance
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Sec-Fetch-User", "?1")
+		req.Header.Set("Sec-Fetch-Dest", "document")
+	}
+
 	return req, nil
 }
 
@@ -434,137 +490,148 @@ func containsString(slice []string, item string) bool {
 }
 
 // performRequestWithRetry performs an HTTP request with retries and exponential backoff
-func performRequestWithRetry(client *http.Client, req *http.Request, fullURL string, totalURLs int, totalPayloads int, currentURL int, currentPayload int, headers string, cookies string, reasons []string) (bool, int) {
-	startTime := time.Now()
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		resp, err := client.Do(req)
-		if err == nil {
-			defer resp.Body.Close()
+func performRequestWithRetry(req *http.Request, fullURL string, totalURLs int, totalPayloads int, currentURL int, currentPayload int, headers string, cookies string, reasons []string, timeout int, skipSSLVerify bool) (bool, int) {
+	c := colly.NewCollector(
+		colly.MaxDepth(1),
+		colly.Async(false),
+		colly.IgnoreRobotsTxt(),
+	)
 
-			bodyBytes, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return false, 0
-			}
-			body := string(bodyBytes)
-			responseSize := len(body) // حجم الطلب الأول (مع الـ payload)
+	transport := &http.Transport{
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: skipSSLVerify},
+	}
+	if len(proxies) > 0 {
+		proxyURL, _ := url.Parse(getNextProxy())
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	c.WithTransport(transport)
 
-			responseTime := time.Since(startTime).Milliseconds()
-			logResult(fmt.Sprintf("Response time for %s: %dms", fullURL, responseTime))
+	c.SetRequestTimeout(time.Duration(timeout) * time.Second)
 
-			// فلترة الاستجابات غير المرغوبة
-			if responseSize == 0 || contains(excludeCodes, resp.StatusCode) || contains(excludeSizes, responseSize) ||
-				resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound ||
-				resp.StatusCode == http.StatusSeeOther || resp.StatusCode == http.StatusTemporaryRedirect ||
-				resp.StatusCode == http.StatusPermanentRedirect || resp.StatusCode == http.StatusBadRequest ||
-				resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
-				resp.StatusCode == http.StatusInternalServerError {
-				return false, responseSize
-			}
+	var responseSize int
+	var isVulnerable bool
+	var body string
 
-			if resp.StatusCode == http.StatusOK {
-				var reasonsList []string
-				var isVulnerable bool
-				indicatorsFound := false
+	c.OnRequest(func(r *colly.Request) {
+		*r = colly.Request{
+			URL:     req.URL,
+			Method:  req.Method,
+			Body:    req.Body,
+			Headers: &req.Header,
+		}
+	})
 
-				// Step 1: Check Indicators
-				if containsString(reasons, "indicators") {
-					for _, indicator := range indicators {
-						if strings.Contains(body, indicator) {
-							reasonsList = append(reasonsList, fmt.Sprintf("Found: %s", indicator))
-							indicatorsFound = true
-							isVulnerable = true
-							break
-						}
-					}
-				}
+	c.OnResponse(func(r *colly.Response) {
+		responseSize = len(r.Body)
+		body = string(r.Body)
 
-				if indicatorsFound {
-					fmt.Printf("\r%s[+] LFI Detected (Indicators Found): %s \n       - | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n\n", Green, fullURL, strings.Join(reasonsList, " | "), responseSize, Reset)
-					logResult(fmt.Sprintf("[+] LFI Detected (Indicators Found): %s | Reason: %s", fullURL, strings.Join(reasonsList, " | ")))
-					return true, responseSize
-				}
-
-				// Step 2: Baseline Check (الطلب التاني بدون payload)
-				_, sizeWithoutPayload, statusCodeWithoutPayload, err := sendRequestWithoutPayload(client, req.Method, fullURL, headers, cookies)
-				if err != nil || statusCodeWithoutPayload != http.StatusOK {
-					return false, responseSize
-				}
-
-				payloadSize := 0
-				if req.Method == "GET" {
-					parsedURL, _ := url.Parse(fullURL)
-					query := parsedURL.Query()
-					for _, values := range query {
-						for _, value := range values {
-							payloadSize += len(value)
-						}
-					}
-				} else if req.Method == "POST" {
-					parts := strings.SplitN(fullURL, " ", 2)
-					if len(parts) == 2 {
-						bodyPart := parts[1]
-						payloadSize = len(bodyPart)
-					}
-				}
-
-				adjustedBodySize := responseSize - payloadSize
-				if adjustedBodySize < 0 {
-					adjustedBodySize = 0
-				}
-				sizeDifferencePercent := float64(adjustedBodySize-sizeWithoutPayload) / float64(sizeWithoutPayload) * 100
-				sizeDifferenceAbsolute := adjustedBodySize - sizeWithoutPayload
-
-				// Step 3: Sanity Check (الطلب التالت مع payload وهمي)
-				dummyURL := buildURLWithParam(fullURL, "dummy", "test0123")
-				_, dummySize, dummyStatusCode, err := sendRequestWithoutPayload(client, req.Method, dummyURL, headers, cookies)
-				if err != nil || dummyStatusCode != http.StatusOK {
-					return false, responseSize
-				}
-
-				// حذف sizeDiffRequest1vs3Percent لأنه مش مستخدم
-				// sizeDiffRequest1vs3 := abs(responseSize - dummySize)
-				// sizeDiffRequest1vs3Percent := (float64(sizeDiffRequest1vs3) / float64(responseSize)) * 100
-
-				if containsString(reasons, "size") {
-					if sizeDifferenceAbsolute > 200 && sizeDifferencePercent > 25 {
-						reasonsList = append(reasonsList, fmt.Sprintf("Size Diff: %.2f%%", sizeDifferencePercent))
-						isVulnerable = true
-					} else if sizeDifferencePercent > 50 {
-						reasonsList = append(reasonsList, fmt.Sprintf("Size Diff: %.2f%%", sizeDifferencePercent))
-						isVulnerable = true
-					}
-				}
-
-				if isVulnerable {
-					// إذا تم اكتشاف الثغرة بناءً على الحجم، نطبع أحجام الطلبات الثلاثة
-					topReasons := strings.Join(reasonsList, " | ")
-					fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]%s\n", Green, fullURL, topReasons, responseSize, sizeWithoutPayload, dummySize, Reset)
-					logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s | Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]", fullURL, topReasons, responseSize, sizeWithoutPayload, dummySize))
-					return true, responseSize
-				}
-
-				// Step 4: التحقق الإضافي لحجم الطلبات
-				sizeDiffBaselineVsDummy := abs(sizeWithoutPayload - dummySize)
-				sizeDiffBaselineVsDummyPercent := float64(sizeDiffBaselineVsDummy) / float64(sizeWithoutPayload) * 100
-				sizeDiffWithBaseline := abs(responseSize - sizeWithoutPayload)
-				sizeDiffWithDummyNew := abs(responseSize - dummySize)
-
-				if sizeDiffBaselineVsDummyPercent < 10 && (sizeDiffWithBaseline > 200 || sizeDiffWithDummyNew > 200) {
-					reasonsList = append(reasonsList, fmt.Sprintf("Baseline vs Dummy Size Diff: %.2f%% | Large Diff with Original: %d/%d bytes", sizeDiffBaselineVsDummyPercent, sizeDiffWithBaseline, sizeDiffWithDummyNew))
-					fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]%s\n", Green, fullURL, strings.Join(reasonsList, " | "), responseSize, sizeWithoutPayload, dummySize, Reset)
-					logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s | Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]", fullURL, strings.Join(reasonsList, " | "), responseSize, sizeWithoutPayload, dummySize))
-					return true, responseSize
-				}
-
-				return false, responseSize
-			}
-
-			return false, responseSize
+		if responseSize == 0 || contains(excludeCodes, r.StatusCode) || contains(excludeSizes, responseSize) ||
+			r.StatusCode == http.StatusMovedPermanently || r.StatusCode == http.StatusFound ||
+			r.StatusCode == http.StatusSeeOther || r.StatusCode == http.StatusTemporaryRedirect ||
+			r.StatusCode == http.StatusPermanentRedirect || r.StatusCode == http.StatusBadRequest ||
+			r.StatusCode == http.StatusUnauthorized || r.StatusCode == http.StatusForbidden ||
+			r.StatusCode == http.StatusInternalServerError {
+			return
 		}
 
-		time.Sleep(time.Duration(1<<uint(attempt-1)) * time.Second)
+		if r.StatusCode == http.StatusOK {
+			var reasonsList []string
+			indicatorsFound := false
+
+			if containsString(reasons, "indicators") {
+				for _, indicator := range indicators {
+					if strings.Contains(body, indicator) {
+						reasonsList = append(reasonsList, fmt.Sprintf("Found: %s", indicator))
+						indicatorsFound = true
+						isVulnerable = true
+						break
+					}
+				}
+			}
+
+			if indicatorsFound {
+				fmt.Printf("\r%s[+] LFI Detected (Indicators Found): %s \n       - | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n\n", Green, fullURL, strings.Join(reasonsList, " | "), responseSize, Reset)
+				logResult(fmt.Sprintf("[+] LFI Detected (Indicators Found): %s | Reason: %s", fullURL, strings.Join(reasonsList, " | ")))
+				return
+			}
+
+			_, sizeWithoutPayload, statusCodeWithoutPayload, err := sendRequestWithoutPayload(nil, req.Method, fullURL, headers, cookies)
+			if err != nil || statusCodeWithoutPayload != http.StatusOK {
+				return
+			}
+
+			payloadSize := 0
+			if req.Method == "GET" {
+				parsedURL, _ := url.Parse(fullURL)
+				query := parsedURL.Query()
+				for _, values := range query {
+					for _, value := range values {
+						payloadSize += len(value)
+					}
+				}
+			} else if req.Method == "POST" {
+				parts := strings.SplitN(fullURL, " ", 2)
+				if len(parts) == 2 {
+					bodyPart := parts[1]
+					payloadSize = len(bodyPart)
+				}
+			}
+
+			adjustedBodySize := responseSize - payloadSize
+			if adjustedBodySize < 0 {
+				adjustedBodySize = 0
+			}
+			sizeDifferencePercent := float64(adjustedBodySize-sizeWithoutPayload) / float64(sizeWithoutPayload) * 100
+			sizeDifferenceAbsolute := adjustedBodySize - sizeWithoutPayload
+
+			dummyURL := buildURLWithParam(fullURL, "dummy", "test0123")
+			_, dummySize, dummyStatusCode, err := sendRequestWithoutPayload(nil, req.Method, dummyURL, headers, cookies)
+			if err != nil || dummyStatusCode != http.StatusOK {
+				return
+			}
+
+			if containsString(reasons, "size") {
+				if sizeDifferenceAbsolute > 200 && sizeDifferencePercent > 25 {
+					reasonsList = append(reasonsList, fmt.Sprintf("Size Diff: %.2f%%", sizeDifferencePercent))
+					isVulnerable = true
+				} else if sizeDifferencePercent > 50 {
+					reasonsList = append(reasonsList, fmt.Sprintf("Size Diff: %.2f%%", sizeDifferencePercent))
+					isVulnerable = true
+				}
+			}
+
+			if isVulnerable {
+				topReasons := strings.Join(reasonsList, " | ")
+				fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]%s\n", Green, fullURL, topReasons, responseSize, sizeWithoutPayload, dummySize, Reset)
+				logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s | Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]", fullURL, topReasons, responseSize, sizeWithoutPayload, dummySize))
+				return
+			}
+
+			sizeDiffBaselineVsDummy := abs(sizeWithoutPayload - dummySize)
+			sizeDiffBaselineVsDummyPercent := float64(sizeDiffBaselineVsDummy) / float64(sizeWithoutPayload) * 100
+			sizeDiffWithBaseline := abs(responseSize - sizeWithoutPayload)
+			sizeDiffWithDummyNew := abs(responseSize - dummySize)
+
+			if sizeDiffBaselineVsDummyPercent < 10 && (sizeDiffWithBaseline > 200 || sizeDiffWithDummyNew > 200) {
+				reasonsList = append(reasonsList, fmt.Sprintf("Baseline vs Dummy Size Diff: %.2f%% | Large Diff with Original: %d/%d bytes", sizeDiffBaselineVsDummyPercent, sizeDiffWithBaseline, sizeDiffWithDummyNew))
+				fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]%s\n", Green, fullURL, strings.Join(reasonsList, " | "), responseSize, sizeWithoutPayload, dummySize, Reset)
+				logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s | Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]", fullURL, strings.Join(reasonsList, " | "), responseSize, sizeWithoutPayload, dummySize))
+				isVulnerable = true
+			}
+		}
+	})
+
+	c.OnError(func(r *colly.Response, err error) {
+		// بدون إعادة محاولة هنا، نعتمد على الـ limiter
+	})
+
+	err := c.Visit(fullURL) // محاولة واحدة بس
+	if err != nil {
+		return false, 0 // لو فشل، نرجع بدون تأخير
 	}
-	return false, 0
+
+	return isVulnerable, responseSize
 }
 
 // دالة مساعدة للحصول على القيمة المطلقة
@@ -585,25 +652,25 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
 		if err := limiter.Wait(context.Background()); err != nil {
 			continue
 		}
+		time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond) // تأخير بسيط 0-10ms
 
 		baseEndpoint := extractBaseEndpoint(fullURL, payloads)
 		if testedEndpoints[baseEndpoint] {
 			continue
 		}
 
-		client := createClient(timeout, skipSSLVerify)
 		req, err := buildRequest(method, fullURL, payloads, headers, cookies)
 		if err != nil {
 			continue
 		}
 
-		isVulnerable, _ := performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads), headers, cookies, reasons)
+		isVulnerable, _ := performRequestWithRetry(req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads), headers, cookies, reasons, timeout, skipSSLVerify)
 		if isVulnerable {
 			successfulMutex.Lock()
 			successfulPayloads++
 			successfulMutex.Unlock()
 			if stopOnVuln {
-				testedEndpoints[baseEndpoint] = true // Mark this URL as done
+				testedEndpoints[baseEndpoint] = true
 			}
 		}
 
@@ -614,7 +681,6 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
 			currentPayload := (currentRequest-1)%totalPayloads + 1
 			fmt.Printf("\rURLs: %5d/%-5d | Payloads: %5d/%-5d | Found: %5d ",
 				currentURL, totalURLs, currentPayload, totalPayloads, successfulPayloads)
-
 			countMutex.Unlock()
 		}
 
@@ -623,56 +689,69 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
 		countMutex.Unlock()
 
 		if *requestCount%reqInterval == 0 {
+			client := createClient(timeout, skipSSLVerify)
 			sendNormalRequest(client, baseEndpoint)
 		}
 	}
 }
 
 // sendRequestWithoutPayload sends a request without any payload
-func sendRequestWithoutPayload(client *http.Client, method, fullURL string, headers string, cookies string) (string, int, int, error) {
-	parsedURL, err := url.Parse(fullURL)
-	if err != nil {
-		return "", 0, 0, err
-	}
-	baseURL := parsedURL.Scheme + "://" + parsedURL.Host + parsedURL.Path
+func sendRequestWithoutPayload(_ *http.Client, method, fullURL string, headers string, cookies string) (string, int, int, error) {
+	c := colly.NewCollector(
+		colly.MaxDepth(1),
+		colly.Async(false),
+		colly.IgnoreRobotsTxt(),
+	)
 
-	req, err := http.NewRequest(method, baseURL, nil)
-	if err != nil {
-		return "", 0, 0, err
+	// ضبط الـ Transport لدعم البروكسيات وتخطي التحقق من SSL
+	transport := &http.Transport{
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true}, // افتراضيًا بنخليها true، ممكن نعدلها لو لازم
 	}
+	if len(proxies) > 0 {
+		proxyURL, _ := url.Parse(getNextProxy())
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	c.WithTransport(transport)
 
-	if headers != "" {
-		headerPairs := strings.Split(headers, ",")
-		for _, pair := range headerPairs {
-			parts := strings.SplitN(pair, ":", 2)
-			if len(parts) == 2 {
-				req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+	var body string
+	var size, statusCode int
+
+	c.OnRequest(func(r *colly.Request) {
+		r.Method = method
+		parsedURL, _ := url.Parse(fullURL)
+		r.URL = parsedURL
+		if headers != "" {
+			headerPairs := strings.Split(headers, ",")
+			for _, pair := range headerPairs {
+				parts := strings.SplitN(pair, ":", 2)
+				if len(parts) == 2 {
+					r.Headers.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+				}
 			}
 		}
-	}
+		if cookies != "" {
+			r.Headers.Set("Cookie", cookies)
+		}
+		r.Headers.Set("Cache-Control", "no-cache")
+		r.Headers.Set("Pragma", "no-cache")
+		r.Headers.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
+		r.Headers.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+		r.Headers.Set("X-Forwarded-For", randomIP())
+	})
 
-	if cookies != "" {
-		req.Header.Set("Cookie", cookies)
-	}
+	c.OnResponse(func(r *colly.Response) {
+		body = string(r.Body)
+		size = len(r.Body)
+		statusCode = r.StatusCode
+	})
 
-	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("Pragma", "no-cache")
-	req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("X-Forwarded-For", randomIP())
-
-	resp, err := client.Do(req)
+	err := c.Visit(fullURL)
 	if err != nil {
 		return "", 0, 0, err
 	}
-	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", 0, 0, err
-	}
-
-	return string(bodyBytes), len(bodyBytes), resp.StatusCode, nil
+	return body, size, statusCode, nil
 }
 
 // normalizeResponse removes dynamic content (like dates and times) from the response
@@ -729,8 +808,8 @@ func testCookies(fullURL string, payloads []string, client *http.Client, testedE
 		req.Header.Set("Cookie", "test="+payload)
 		req.Header.Set("X-Forwarded-For", randomIP())
 
-		// تمرير reasons لـ performRequestWithRetry
-		isVulnerable, _ := performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, 0, 0, "", "", reasons)
+		// استدعاء performRequestWithRetry بالمعاملات الجديدة
+		isVulnerable, _ := performRequestWithRetry(req, fullURL, totalURLs, totalPayloads, 0, 0, "", "", reasons, 10, false) // timeout و skipSSLVerify هنا افتراضيين
 		if isVulnerable {
 			testedEndpoints[baseURL] = true
 		}
