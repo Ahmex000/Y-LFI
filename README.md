@@ -93,6 +93,14 @@ go run Y-Lfi.go -f urls.txt -p payloads.txt -hide-not-vulnerable -stop-on-vuln -
 ```bash
 go run Y-Lfi.go -f urls.txt -p payloads.txt -hide-not-vulnerable -stop-on-vuln -rate 100 -t 20 -reasons indicators,size,similarity
 ```
+
+**this  Command to bypass some system restrictions** (if you must use a file):
+```bash
+while read -r url; do
+    go run Y-Lfi.go -u "$url" -p payload -hide-not-vulnerable -stop-on-vuln -rate 100 -t 20 -reasons indicators,size,similarity
+done < urls
+
+```
 However, expect potentially less consistent results compared to `-u` due to threading and file handling overhead.
 
 ## Example Files
