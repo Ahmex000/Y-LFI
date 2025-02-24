@@ -95,7 +95,7 @@ var indicators = []string{
 	"C:\\WINNT\\system32\\", "C:\\Program Files\\", "C:\\Users\\",
 	"win.ini(.[a-zA-Z0-9]+)?|win.ini[-_?=/\\.]?", "system.ini", "boot.ini", "ntldr",
 	"\\System32\\", "\\Windows\\", "Administrator:", "SYSTEM:", "uid=", "gid=", " pid=",
-	"kernel", "Linux version",
+	"kernel", "Linux version", "VirtualHost ", "/etc/apache",
 }
 
 func main() {
@@ -447,11 +447,12 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 				return false, 0
 			}
 			body := string(bodyBytes)
-			responseSize := len(body)
+			responseSize := len(body) // حجم الطلب الأول (مع الـ payload)
 
 			responseTime := time.Since(startTime).Milliseconds()
 			logResult(fmt.Sprintf("Response time for %s: %dms", fullURL, responseTime))
 
+			// فلترة الاستجابات غير المرغوبة
 			if responseSize == 0 || contains(excludeCodes, resp.StatusCode) || contains(excludeSizes, responseSize) ||
 				resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound ||
 				resp.StatusCode == http.StatusSeeOther || resp.StatusCode == http.StatusTemporaryRedirect ||
@@ -466,7 +467,7 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 				var isVulnerable bool
 				indicatorsFound := false
 
-				// Step 1: Check Indicators (Request 1)
+				// Step 1: Check Indicators
 				if containsString(reasons, "indicators") {
 					for _, indicator := range indicators {
 						if strings.Contains(body, indicator) {
@@ -478,14 +479,13 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 					}
 				}
 
-				// If indicators found, return true immediately
 				if indicatorsFound {
-					fmt.Printf("\r%s[+] LFI Detected (Indicators Found): %s | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Green, fullURL, strings.Join(reasonsList, " | "), responseSize, Reset)
+					fmt.Printf("\r%s[+] LFI Detected (Indicators Found): %s \n       - | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n\n", Green, fullURL, strings.Join(reasonsList, " | "), responseSize, Reset)
 					logResult(fmt.Sprintf("[+] LFI Detected (Indicators Found): %s | Reason: %s", fullURL, strings.Join(reasonsList, " | ")))
 					return true, responseSize
 				}
 
-				// Step 2: Baseline Check (Request 2) if no indicators
+				// Step 2: Baseline Check (الطلب التاني بدون payload)
 				bodyWithoutPayload, sizeWithoutPayload, statusCodeWithoutPayload, err := sendRequestWithoutPayload(client, req.Method, fullURL, headers, cookies)
 				if err != nil || statusCodeWithoutPayload != http.StatusOK {
 					return false, responseSize
@@ -535,31 +535,51 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 				}
 
 				if !isVulnerable {
-					return false, responseSize
+					// Step 3: Sanity Check (الطلب التالت مع payload وهمي)
+					dummyURL := buildURLWithParam(fullURL, "dummy", "test0123")
+					_, dummySize, dummyStatusCode, err := sendRequestWithoutPayload(client, req.Method, dummyURL, headers, cookies)
+					if err != nil || dummyStatusCode != http.StatusOK {
+						return false, responseSize
+					}
+
+					sizeDiffRequest1vs3 := abs(responseSize - dummySize)
+					sizeDiffRequest1vs3Percent := (float64(sizeDiffRequest1vs3) / float64(responseSize)) * 100
+
+					if sizeDiffRequest1vs3Percent < 10 {
+						return false, responseSize
+					}
+					fmt.Printf("\r%s[+] LFI Possible: %s | Diff: %.2f%% (%d bytes)%s\n",
+						Green, fullURL, sizeDiffRequest1vs3Percent, sizeDiffRequest1vs3, Reset)
+					return true, responseSize
+
+					// Step 4: التحقق الجديد مع تقليل الفرق
+					// شرط 1: لو حجم الطلب التاني قريب جدًا من حجم الطلب التالت
+					sizeDiffBaselineVsDummy := abs(sizeWithoutPayload - dummySize)
+					sizeDiffBaselineVsDummyPercent := float64(sizeDiffBaselineVsDummy) / float64(sizeWithoutPayload) * 100
+					// شرط 2: فرق كبير بين الطلب الأول و(التاني أو التالت) - قيمة أقل (200 بدل 500)
+					sizeDiffWithBaseline := abs(responseSize - sizeWithoutPayload)
+					sizeDiffWithDummyNew := abs(responseSize - dummySize)
+
+					if sizeDiffBaselineVsDummyPercent < 10 && (sizeDiffWithBaseline > 200 || sizeDiffWithDummyNew > 200) {
+						reasonsList = append(reasonsList, fmt.Sprintf("Baseline vs Dummy Size Diff: %.2f%% | Large Diff with Original: %d/%d bytes", sizeDiffBaselineVsDummyPercent, sizeDiffWithBaseline, sizeDiffWithDummyNew))
+						isVulnerable = true
+					}
+
+					if isVulnerable {
+						topReasons := strings.Join(reasonsList, " | ")
+						fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Green, fullURL, topReasons, responseSize, Reset)
+						logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s", fullURL, topReasons))
+						return true, responseSize
+					}
+				} else {
+					// لو اتكشفت ثغرة من الـ size أو similarity، نطبع النتيجة
+					topReasons := strings.Join(reasonsList, " | ")
+					fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Green, fullURL, topReasons, responseSize, Reset)
+					logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s", fullURL, topReasons))
+					return true, responseSize
 				}
 
-				// Step 3: Sanity Check (Request 3) if passed Step 2
-				dummyURL := buildURLWithParam(fullURL, "dummy", "test0123")
-				dummyBody, dummySize, dummyStatusCode, err := sendRequestWithoutPayload(client, req.Method, dummyURL, headers, cookies)
-				if err != nil || dummyStatusCode != http.StatusOK {
-					return false, responseSize
-				}
-
-				normalizedDummyBody := normalizeResponse(dummyBody)
-				similarityWithDummy := calculateSimilarity(normalizedBody, normalizedDummyBody)
-				sizeDiffWithDummy := responseSize - dummySize
-				sizeDiffWithDummyPercent := float64(sizeDiffWithDummy) / float64(dummySize) * 100
-
-				// تعديل الشرط لاستخدام sizeDiffWithDummyPercent
-				if similarityWithDummy > 90 || sizeDiffWithDummyPercent < 25 {
-					return false, responseSize
-				}
-
-				// If it passed all steps
-				topReasons := strings.Join(reasonsList, " | ")
-				fmt.Printf("\r%s[+] LFI Detected: %s | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n", Green, fullURL, topReasons, responseSize, Reset)
-				logResult(fmt.Sprintf("[+] LFI Detected: %s | Reason: %s", fullURL, topReasons))
-				return true, responseSize
+				return false, responseSize
 			}
 
 			return false, responseSize
@@ -568,6 +588,14 @@ func performRequestWithRetry(client *http.Client, req *http.Request, fullURL str
 		time.Sleep(time.Duration(1<<uint(attempt-1)) * time.Second)
 	}
 	return false, 0
+}
+
+// دالة مساعدة للحصول على القيمة المطلقة
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 func worker(urlChan <-chan string, payloads []string, method string, reqInterval int, requestCount *int, countMutex *sync.Mutex, wg *sync.WaitGroup, headers string, cookies string, timeout int, skipSSLVerify bool, totalURLs int, totalPayloads int, reasons []string) {
@@ -592,7 +620,7 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
 			continue
 		}
 
-		isVulnerable, responseSize := performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads), headers, cookies, reasons)
+		isVulnerable, _ := performRequestWithRetry(client, req, fullURL, totalURLs, totalPayloads, *requestCount+1, len(payloads), headers, cookies, reasons)
 		if isVulnerable {
 			successfulMutex.Lock()
 			successfulPayloads++
@@ -607,8 +635,9 @@ func worker(urlChan <-chan string, payloads []string, method string, reqInterval
 			currentRequest := *requestCount + 1
 			currentURL := (currentRequest-1)/totalPayloads + 1
 			currentPayload := (currentRequest-1)%totalPayloads + 1
-			fmt.Printf("\rURLs: %d/%d | Payloads: %d/%d | Found: %d Response Size: %d",
-				currentURL, totalURLs, currentPayload, totalPayloads, successfulPayloads, responseSize)
+			fmt.Printf("\rURLs: %5d/%-5d | Payloads: %5d/%-5d | Found: %5d ",
+				currentURL, totalURLs, currentPayload, totalPayloads, successfulPayloads)
+
 			countMutex.Unlock()
 		}
 
@@ -737,7 +766,8 @@ func sendNormalRequest(client *http.Client, baseURL string) {
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Printf("%s[-] Error sending normal request to %s: %v%s\n", Red, baseURL, err, Reset)
+
+		/*fmt.Printf("\r%s[-] Error Detected: %s%s\n", Red, baseURL, Reset)*/
 		return
 	}
 	resp.Body.Close()
