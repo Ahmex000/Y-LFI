@@ -182,13 +182,14 @@ misuse or damage caused by this program.` + Reset)
 	excludeSizesFlag := flag.String("exclude-sizes", "", "Comma-separated list of response sizes to exclude")
 	excludeCodesFlag := flag.String("exclude-codes", "", "Comma-separated list of status codes to exclude")
 	flag.BoolVar(&hideNotVulnerable, "hide-not-vulnerable", false, "Hide not vulnerable endpoints")
-	flag.BoolVar(&stopOnVuln, "stop-on-vuln", false, "Stop sending payloads to a URL after detecting a vulnerability") // New flag
+	flag.BoolVar(&stopOnVuln, "stop-on-vuln", false, "Stop sending payloads to a URL after detecting a vulnerability")
 	flag.Parse()
 
 	limiter.SetLimit(rate.Limit(*rateLimit))
 
-	if *payloadFile == "" || (*urlFlag == "" && *endpointFile == "") {
-		fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [-t threads] [-m GET|POST] [-r interval] [-proxy proxy | -proxyfile proxies_file] [-o output_file] [-rate requests_per_sec] [-headers 'Header1:Value1,Header2:Value2'] [-cookies 'Cookie1=Value1; Cookie2=Value2'] [-timeout 10] [-skip-ssl-verify] [-reasons 'indicators,size,similarity'] [-show-progress] [-vuln-only] [-exclude-sizes 50,100] [-exclude-codes 404,500] [-hide-not-vulnerable] [-stop-on-vuln]")
+	if *payloadFile == "" {
+		fmt.Println("Error: Payload file (-p) is required")
+		fmt.Println("Usage: go run YLfi.go -p payloads.txt [-u url/request_file | -f endpoints.txt] [...]")
 		os.Exit(1)
 	}
 
@@ -240,6 +241,7 @@ misuse or damage caused by this program.` + Reset)
 		fmt.Printf("%sError reading payloads file: %v%s\n", Red, err, Reset)
 		os.Exit(1)
 	}
+	fmt.Printf("Loaded %d payloads from %s\n", len(payloads), *payloadFile)
 
 	var endpoints []string
 	if *urlFlag != "" {
@@ -253,12 +255,20 @@ misuse or damage caused by this program.` + Reset)
 		} else {
 			endpoints = append(endpoints, *urlFlag)
 		}
-	} else {
-		endpoints, err = readLines(*endpointFile)
+	}
+	if *endpointFile != "" { // دايما اقرا -f لو موجود
+		fileEndpoints, err := readLines(*endpointFile)
 		if err != nil {
 			fmt.Printf("%sError reading endpoints file: %v%s\n", Red, err, Reset)
 			os.Exit(1)
 		}
+		endpoints = append(endpoints, fileEndpoints...)
+		fmt.Printf("Loaded %d endpoints from %s\n", len(fileEndpoints), *endpointFile)
+	}
+
+	if len(endpoints) == 0 {
+		fmt.Println("Error: No endpoints provided (use -u or -f)")
+		os.Exit(1)
 	}
 
 	urlChan := make(chan string, 1000)
@@ -279,6 +289,10 @@ misuse or damage caused by this program.` + Reset)
 			urlChan <- endpoint
 		} else {
 			params := extractParams(endpoint)
+			if len(params) == 0 {
+				fmt.Printf("%sWarning: No parameters found in %s, skipping%s\n", Yellow, endpoint, Reset)
+				continue
+			}
 			for param := range params {
 				for _, payload := range payloads {
 					urlChan <- buildURLWithParam(endpoint, param, payload)
