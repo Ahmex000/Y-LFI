@@ -1,4 +1,3 @@
-// if you faced any problem with main one . HAPPY HACKING
 package main
 
 import (
@@ -557,7 +556,7 @@ func performRequestWithRetry(req *http.Request, fullURL string, totalURLs int, t
 					if strings.Contains(body, indicator) {
 						reasonsList = append(reasonsList, fmt.Sprintf("Found: %s", indicator))
 						indicatorsFound = true
-						isVulnerable = true // ضبط isVulnerable هنا
+						isVulnerable = true
 						break
 					}
 				}
@@ -566,7 +565,6 @@ func performRequestWithRetry(req *http.Request, fullURL string, totalURLs int, t
 			if indicatorsFound {
 				fmt.Printf("\r%s[+] LFI Detected (Indicators Found): %s \n       - | Reason: %s \033[34m| Response Size: \033[33m[ %d bytes ]%s\n\n", Green, fullURL, strings.Join(reasonsList, " | "), responseSize, Reset)
 				logResult(fmt.Sprintf("[+] LFI Detected (Indicators Found): %s | Reason: %s", fullURL, strings.Join(reasonsList, " | ")))
-				// مش هنعمل return هنا عشان نكمل الفحص
 			}
 
 			_, sizeWithoutPayload, statusCodeWithoutPayload, err := sendRequestWithoutPayload(nil, req.Method, fullURL, headers, cookies)
@@ -608,7 +606,7 @@ func performRequestWithRetry(req *http.Request, fullURL string, totalURLs int, t
 						}
 					}
 
-					if len(reasonsList) > 0 && !indicatorsFound { // طباعة فقط لو مفيش مؤشرات تم اكتشافها من قبل
+					if len(reasonsList) > 0 && !indicatorsFound {
 						topReasons := strings.Join(reasonsList, " | ")
 						fmt.Printf("\r%s[+] LFI Detected: %s \n       - | Reason: %s \033[34m| Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]%s\n", Green, fullURL, topReasons, responseSize, sizeWithoutPayload, dummySize, Reset)
 						logResult(fmt.Sprintf("[+] LFI Detected: %s \n       - | Reason: %s | Sizes: [Req1: %d | Req2: %d | Req3: %d bytes]", fullURL, topReasons, responseSize, sizeWithoutPayload, dummySize))
@@ -631,12 +629,13 @@ func performRequestWithRetry(req *http.Request, fullURL string, totalURLs int, t
 	})
 
 	c.OnError(func(r *colly.Response, err error) {
-		fmt.Printf("%s[-] Request failed for %s: %v%s\n", Yellow, fullURL, err, Reset)
+		// مش هنرجع false هنا عشان لو كان فيه ثغرة قبل الخطأ، تتسجل
 	})
 
 	err := c.Visit(req.URL.String())
 	if err != nil {
-		return false, 0
+		// لو حصل خطأ في الزيارة، نرجع القيم الحالية بدل ما نلغي كل حاجة
+		return isVulnerable, responseSize
 	}
 
 	return isVulnerable, responseSize
