@@ -126,8 +126,5 @@ http://example.com/?page=
 ## Contributing
 Feel free to submit pull requests or open issues for bug reports and feature suggestions!
 
-## License
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-**Disclaimer**: The developers are not responsible for any misuse or damage caused by this tool.
-```
+## 📫 Contact
+Have questions or suggestions? Feel free to open an issue or reach out via x.com/Ahmex000 . Happy hunting! 🐛🔍
